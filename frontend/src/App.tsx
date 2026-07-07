@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Events } from "@wailsio/runtime";
-import { SendMessage } from "../bindings/changeme/internal/app/chatservice";
+import { SendMessage, IngestFile } from "../bindings/changeme/internal/app/chatservice";
 
 // Standard pure SVG icon wrappers
 const PlusIcon = () => <svg className="menu-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>;
@@ -25,6 +25,14 @@ interface Collection {
   id: number;
   name: string;
   docCount: number;
+}
+
+interface IngestedDocument {
+  id: string;
+  collectionId: number;
+  filename: string;
+  wordCount: number;
+  timestamp: string;
 }
 
 export default function App() {
@@ -52,15 +60,26 @@ export default function App() {
   const [newCollName, setNewCollectionName] = useState("");
   const [fileName, setFileName] = useState("");
   const [fileContent, setFileContent] = useState("");
+  const [ingestionStatus, setIngestionStatus] = useState<string>("");
+
+  // Ingested Documents Registry
+  const [ingestedDocs, setIngestedDocs] = useState<IngestedDocument[]>([]);
+
+  // Ref tracking to guarantee streaming tokens always append to the correct targeted chat session
+  const activeChatIdRef = useRef<number>(activeChatId);
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
 
   const activeChat = chats.find((c) => c.id === activeChatId) || chats[0];
 
   // Token streaming handler
   useEffect(() => {
     const offToken = Events.On("chat:token", (e: any) => {
+      const targetSessionId = e.data.sessionId;
       setChats((prevChats) =>
         prevChats.map((chat) => {
-          if (chat.id === activeChatId) {
+          if (chat.id === targetSessionId) {
             const lastMsg = chat.messages[chat.messages.length - 1];
             if (lastMsg && lastMsg.sender === "ai") {
               const updatedMessages = [...chat.messages];
@@ -92,7 +111,7 @@ export default function App() {
       offToken();
       offDone();
     };
-  }, [activeChatId]);
+  }, []);
 
   // Handle New Chat logic
   const handleNewChat = () => {
@@ -122,6 +141,7 @@ export default function App() {
     if (!inputMessage.trim() || isGenerating) return;
 
     const userPrompt = inputMessage;
+    const targetedSessionId = activeChatId; // Freeze session reference
     setInputMessage("");
     setIsGenerating(true);
 
@@ -135,7 +155,7 @@ export default function App() {
     const userMsg: Message = { id: Math.random().toString(), sender: "user", text: userPrompt };
     setChats((prevChats) =>
       prevChats.map((c) => {
-        if (c.id === activeChatId) {
+        if (c.id === targetedSessionId) {
           return {
             ...c,
             title: updatedTitle,
@@ -148,7 +168,7 @@ export default function App() {
 
     // 3. Trigger Wails Chat completion
     try {
-      await SendMessage(activeChatId, activeCollectionId, userPrompt);
+      await SendMessage(targetedSessionId, activeCollectionId, userPrompt);
     } catch (err) {
       console.error(err);
       setIsGenerating(false);
@@ -166,29 +186,48 @@ export default function App() {
   // Handle File Ingest submission
   const handleIngestFile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fileName.trim() || !fileContent.trim()) return;
+    if (!fileContent.trim()) return;
+
+    // 1. Clean, sanitize, and validate the filename
+    let rawName = fileName.trim();
+    if (!rawName) {
+      rawName = "pasted-text-document";
+    }
+    // Sanitize non-alphanumeric characters but preserve extension
+    let sanitizedName = rawName.replace(/[^a-zA-Z0-9.-]/g, "_");
+    if (!sanitizedName.includes(".")) {
+      sanitizedName += ".txt"; // Add default .txt fallback if missing extension
+    }
+
+    setIngestionStatus("In progress... Vectorizing and chunking contents locally.");
 
     try {
-      // Resolve the dynamic CGO call using clean Call.ByName
-      const { Call } = await import("@wailsio/runtime");
+      // Call the strongly bound typed IngestFile function directly
+      await IngestFile(activeCollectionId, sanitizedName, fileContent);
       
-      // We try the canonical Wails v3 Service export signature first
-      try {
-        await Call.ByName("changeme.ChatService.IngestFile", activeCollectionId, fileName, fileContent);
-      } catch (bindErr) {
-        // Fallback for older alpha versions or nested package signatures
-        await Call.ByName("changeme/internal/app/ChatService.IngestFile", activeCollectionId, fileName, fileContent);
-      }
-      
+      // Update collections and add to document registry
       setCollections((prevCols) =>
         prevCols.map((col) =>
           col.id === activeCollectionId ? { ...col, docCount: col.docCount + 1 } : col
         )
       );
+
+      const words = fileContent.split(/\s+/).length;
+      const newDoc: IngestedDocument = {
+        id: Math.random().toString(),
+        collectionId: activeCollectionId,
+        filename: sanitizedName,
+        wordCount: words,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+
+      setIngestedDocs((prevDocs) => [newDoc, ...prevDocs]);
       setFileName("");
       setFileContent("");
-      alert("Document split, vectorized, and ingested successfully!");
+      setIngestionStatus("Success! File split, embedded, and ingested successfully.");
+      setTimeout(() => setIngestionStatus(""), 4000);
     } catch (err) {
+      setIngestionStatus("");
       alert("Ingestion error: " + err);
     }
   };
@@ -421,6 +460,33 @@ export default function App() {
               </div>
             </div>
 
+            {/* Ingested Documents List view */}
+            <div className="ingest-section" style={{ marginBottom: "30px" }}>
+              <h2 style={{ fontSize: "18px", marginBottom: "12px" }}>Ingested Documents Registry</h2>
+              {ingestedDocs.length === 0 ? (
+                <p style={{ color: "var(--text-muted)", fontSize: "13.5px" }}>No documents ingested yet in this session.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {ingestedDocs.filter(d => d.collectionId === activeCollectionId).map((doc) => (
+                    <div key={doc.id} style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      background: "rgba(255, 255, 255, 0.03)",
+                      padding: "10px 16px",
+                      borderRadius: "8px",
+                      border: "1px solid var(--panel-border)"
+                    }}>
+                      <span style={{ fontSize: "14px", fontWeight: "500" }}>{doc.filename}</span>
+                      <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                        {doc.wordCount} words • {doc.timestamp}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="ingest-section">
               <h2 style={{ fontSize: "18px", marginBottom: "6px" }}>Vectorize & Ingest Local Document</h2>
               <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
@@ -431,10 +497,9 @@ export default function App() {
                 <input
                   type="text"
                   className="ingest-input"
-                  placeholder="Filename (e.g. document.txt)"
+                  placeholder="Filename (e.g. document.txt or 'pasted-document')"
                   value={fileName}
                   onChange={(e) => setFileName(e.target.value)}
-                  required
                 />
                 <textarea
                   className="ingest-input ingest-textarea"
@@ -443,6 +508,16 @@ export default function App() {
                   onChange={(e) => setFileContent(e.target.value)}
                   required
                 />
+                
+                {ingestionStatus && (
+                  <p style={{
+                    fontSize: "13.5px",
+                    color: ingestionStatus.includes("Success") ? "#4caf50" : "#ff9800",
+                    fontWeight: "500",
+                    margin: "5px 0"
+                  }}>{ingestionStatus}</p>
+                )}
+
                 <button type="submit" className="primary-btn" style={{ alignSelf: "flex-start" }}>
                   Ingest & Vectorize Document
                 </button>
