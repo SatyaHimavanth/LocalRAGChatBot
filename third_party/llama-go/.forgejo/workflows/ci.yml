@@ -1,0 +1,166 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, "tom/*"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: git.tomfos.tr
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: git.tomfos.tr/tom/llama-go:build-cuda
+    env:
+      LIBRARY_PATH: ${{ github.workspace }}
+      C_INCLUDE_PATH: ${{ github.workspace }}
+      # No LD_LIBRARY_PATH needed: default BUILD_LINKAGE=static links everything in.
+      # (Shared-mode opt-in handles runtime via -Wl,-rpath,$ORIGIN baked into the binary.)
+      # Configure sccache for CMake builds
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+      CMAKE_CUDA_COMPILER_LAUNCHER: sccache
+      # Enable GitHub Actions cache backend
+      SCCACHE_GHA_ENABLED: "true"
+      # Test models for integration tests
+      TEST_CHAT_MODEL: Qwen3-0.6B-Q8_0.gguf
+      TEST_EMBEDDING_MODEL: Qwen3-Embedding-0.6B-Q8_0.gguf
+      # Suppress verbose llama.cpp logs (set to "info" or "debug" for debugging)
+      LLAMA_LOG: error
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Detect versions
+        id: versions
+        uses: https://git.tomfos.tr/actions/detect-versions@v1
+
+      - name: Cache test models
+        uses: https://github.com/actions/cache@v4
+        with:
+          path: |
+            Qwen3-0.6B-Q8_0.gguf
+            Qwen3-Embedding-0.6B-Q8_0.gguf
+          key: test-models-qwen3-0.6b-q8-v1
+
+      - name: Cache dependencies
+        uses: https://github.com/actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          # Cache key includes OS/arch, llama.cpp commit, wrapper changes, and Go dependencies
+          # Invalidates when: platform changes, submodule updates, wrapper modified, or dependencies change
+          key: ${{ steps.versions.outputs.slug }}-${{ steps.versions.outputs.arch }}-go-${{ hashFiles('llama.cpp/.git/HEAD', 'wrapper.cpp', 'wrapper.h', '**/go.sum') }}
+          restore-keys: |
+            ${{ steps.versions.outputs.slug }}-${{ steps.versions.outputs.arch }}-go-${{ hashFiles('llama.cpp/.git/HEAD', 'wrapper.cpp', 'wrapper.h') }}
+            ${{ steps.versions.outputs.slug }}-${{ steps.versions.outputs.arch }}-go-
+
+      - name: Setup sccache
+        uses: https://git.tomfos.tr/tom/sccache-action@v1
+
+      - name: Verify vendored llama.cpp headers are up to date
+        run: |
+          make vendor-headers
+          if ! git diff --quiet -- cgo_headers; then
+            echo "::error::cgo_headers/ is out of sync with the llama.cpp submodule."
+            echo "Run 'make vendor-headers' and commit the result."
+            git diff --stat -- cgo_headers
+            exit 1
+          fi
+
+      - name: Build library
+        run: |
+          BUILD_TYPE=cublas CUDA_ARCHITECTURES=86 make libbinding.a
+
+      - name: Debug - List built artifacts
+        run: |
+          echo "=== GPU Detection ==="
+          nvidia-smi || echo "No GPU detected"
+          echo "=== Files in workspace root ==="
+          ls -la *.a *.so 2>/dev/null || echo "No .a or .so files in workspace root"
+          echo "=== Current working directory ==="
+          pwd
+
+      - name: Download test models
+        run: |
+          if [ ! -f Qwen3-0.6B-Q8_0.gguf ]; then
+            wget -q https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf
+          fi
+          if [ ! -f Qwen3-Embedding-0.6B-Q8_0.gguf ]; then
+            wget -q https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf
+          fi
+
+      - name: Run tests
+        run: |
+          go run github.com/onsi/ginkgo/v2/ginkgo -tags cublas --flake-attempts 3 -v ./...
+
+      - name: Run example
+        run: |
+          go run -tags cublas ./examples/simple -m Qwen3-0.6B-Q8_0.gguf -p 'Hello world' -n 50
+
+      - name: Upload static artifacts for libs-image job
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: https://github.com/actions/upload-artifact@v3
+        with:
+          name: llama-go-static-libs
+          path: |
+            libbinding.a
+            libllama.a
+            libllama-common.a
+            libllama-common-base.a
+            libggml.a
+            libggml-base.a
+            libggml-cpu.a
+            libggml-cuda.a
+            wrapper.h
+          retention-days: 1
+
+  libs-image:
+    needs: [test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts from test job
+        uses: https://github.com/actions/download-artifact@v3
+        with:
+          name: llama-go-static-libs
+          path: .
+
+      - name: Add Dockerfile to context
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            Dockerfile.libs-cuda
+          sparse-checkout-cone-mode: false
+          path: .checkout
+      - run: cp .checkout/Dockerfile.libs-cuda . && rm -rf .checkout
+
+      - name: Set up Docker Buildx
+        uses: https://github.com/docker/setup-buildx-action@v3
+        with:
+          driver: ${{ env.BUILDKIT_ENDPOINT != '' && 'remote' || 'docker-container' }}
+          endpoint: ${{ env.BUILDKIT_ENDPOINT || '' }}
+
+      - name: Login to Forgejo Registry
+        uses: https://github.com/docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.PACKAGE_TOKEN }}
+
+      - name: Build and push libs-cuda image
+        uses: https://github.com/docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.libs-cuda
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}:libs-cuda
