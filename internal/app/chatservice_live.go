@@ -3,7 +3,9 @@ package app
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"os"
@@ -453,8 +455,164 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 }
 
 // ════════════════════════════════════════════════
-//  Ingestion
+//  File Upload & Parsing
 // ════════════════════════════════════════════════
+
+type FileUploadResult struct {
+	Filename        string `json:"filename"`
+	Status          string `json:"status"` // "success", "duplicate", "error", "replaced"
+	Message         string `json:"message"`
+	DocID           int64  `json:"docId,omitempty"`
+	CollectionName  string `json:"collectionName,omitempty"`
+	WordCount       int    `json:"wordCount,omitempty"`
+	ChunkCount      int    `json:"chunkCount,omitempty"`
+	ExistingDocID   int64  `json:"existingDocId,omitempty"`
+	ExistingCreated int64  `json:"existingCreated,omitempty"`
+}
+
+// UploadFile handles file upload: base64 data -> extract text -> hash -> check dupe -> ingest.
+// If replace is true and file exists, it replaces the old content.
+func (s *ChatService) UploadFile(filename string, base64Data string, collectionID int64, replace bool) (*FileUploadResult, error) {
+	if s.Engine == nil || s.DB == nil {
+		return &FileUploadResult{Filename: filename, Status: "error", Message: "Engine or database not initialized"}, nil
+	}
+
+	// 1. Decode base64
+	data, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return &FileUploadResult{Filename: filename, Status: "error", Message: "Failed to decode file data"}, nil
+	}
+
+	// 2. Compute hash
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+
+	// 3. Extract text using parser
+	text, err := ingest.ParseFileBytes(data, filename)
+	if err != nil {
+		return &FileUploadResult{Filename: filename, Status: "error", Message: err.Error()}, nil
+	}
+	if strings.TrimSpace(text) == "" {
+		return &FileUploadResult{Filename: filename, Status: "error", Message: "No extractable text found in file"}, nil
+	}
+
+	// 4. Check for duplicate
+	existing, err := store.GetDocumentByHash(s.DB, hash, collectionID)
+	if err != nil {
+		return &FileUploadResult{Filename: filename, Status: "error", Message: "Database error checking duplicates"}, nil
+	}
+	if existing != nil {
+		createdTime := time.Unix(existing.CreatedAt, 0).Format("Jan 2, 2006 at 15:04")
+		if !replace {
+			return &FileUploadResult{
+				Filename:        filename,
+				Status:          "duplicate",
+				Message:         fmt.Sprintf("This file is already present in the collection (uploaded %s)", createdTime),
+				ExistingDocID:   existing.ID,
+				ExistingCreated: existing.CreatedAt,
+			}, nil
+		}
+		// Replace: delete old chunks, update content, re-ingest
+		if err := store.DeleteDocumentChunks(s.DB, existing.ID); err != nil {
+			return &FileUploadResult{Filename: filename, Status: "error", Message: "Failed to replace file: " + err.Error()}, nil
+		}
+		if err := store.UpdateDocumentContent(s.DB, existing.ID, text, hash); err != nil {
+			return &FileUploadResult{Filename: filename, Status: "error", Message: "Failed to update document"}, nil
+		}
+		// Re-ingest with new content
+		words := len(strings.Fields(text))
+		chunks := ingest.SplitText(text, 500, 100)
+		for i, chunk := range chunks {
+			embedding, err := s.Engine.Embed(chunk.Content)
+			if err != nil {
+				return &FileUploadResult{Filename: filename, Status: "error", Message: fmt.Sprintf("Embedding error: %v", err)}, nil
+			}
+			if _, err := store.InsertChunk(s.DB, existing.ID, collectionID, chunk.Content, chunk.Ord, embedding); err != nil {
+				return &FileUploadResult{Filename: filename, Status: "error", Message: fmt.Sprintf("Insert error: %v", err)}, nil
+			}
+			_ = i
+		}
+		colName := s.getCollectionName(collectionID)
+		return &FileUploadResult{
+			Filename: filename, Status: "replaced", Message: "File replaced and re-ingested successfully",
+			DocID: existing.ID, CollectionName: colName, WordCount: words, ChunkCount: len(chunks),
+		}, nil
+	}
+
+	// 5. New file: emit progress, ingest
+	colName := s.getCollectionName(collectionID)
+	words := len(strings.Fields(text))
+	chunks := ingest.SplitText(text, 500, 100)
+	total := len(chunks)
+	if total == 0 {
+		return &FileUploadResult{Filename: filename, Status: "error", Message: "No content to ingest"}, nil
+	}
+
+	// Register document with hash and content
+	docID, err := store.AddDocument(s.DB, collectionID, filename, hash, text)
+	if err != nil {
+		return &FileUploadResult{Filename: filename, Status: "error", Message: fmt.Sprintf("Registering document: %v", err)}, nil
+	}
+
+	embedErr := false
+	for i, chunk := range chunks {
+		embedding, err := s.Engine.Embed(chunk.Content)
+		if err != nil {
+			embedErr = true
+			break
+		}
+		if _, err := store.InsertChunk(s.DB, docID, collectionID, chunk.Content, chunk.Ord, embedding); err != nil {
+			embedErr = true
+			break
+		}
+		_ = i
+	}
+
+	// If embedding failed, clean up the document record so it doesn't appear as a broken entry
+	if embedErr {
+		store.DeleteDocument(s.DB, docID)
+		return &FileUploadResult{Filename: filename, Status: "error", Message: "Embedding failed partway through. Document cleaned up. Try again."}, nil
+	}
+
+	return &FileUploadResult{
+		Filename: filename, Status: "success", Message: fmt.Sprintf("File ingested: %d chunks", total),
+		DocID: docID, CollectionName: colName, WordCount: words, ChunkCount: total,
+	}, nil
+}
+
+// GetDocumentContent returns the full extracted text content of a document.
+func (s *ChatService) GetDocumentContent(docID int64) (string, error) {
+	if s.DB == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+	doc, err := store.GetDocumentByID(s.DB, docID)
+	if err != nil {
+		return "", fmt.Errorf("getting document: %w", err)
+	}
+	if doc == nil {
+		return "", fmt.Errorf("document not found")
+	}
+	return doc.Content, nil
+}
+
+// CheckFileHash checks if a file hash already exists in a collection.
+func (s *ChatService) CheckFileHash(hash string, collectionID int64) (*FileUploadResult, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	existing, err := store.GetDocumentByHash(s.DB, hash, collectionID)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, nil
+	}
+	createdTime := time.Unix(existing.CreatedAt, 0).Format("Jan 2, 2006 at 15:04")
+	return &FileUploadResult{
+		Filename: existing.Filename, Status: "duplicate",
+		Message: fmt.Sprintf("Already uploaded %s", createdTime),
+		ExistingDocID: existing.ID, ExistingCreated: existing.CreatedAt,
+	}, nil
+}
 
 func (s *ChatService) IngestFile(collectionID int64, filename string, fileContent string) error {
 	if s.Engine == nil || s.DB == nil {
@@ -492,7 +650,7 @@ func (s *ChatService) IngestFile(collectionID int64, filename string, fileConten
 		"pct": 5, "detail": fmt.Sprintf("%d chunks", total),
 	})
 
-	docID, err := store.AddDocument(s.DB, collectionID, filename)
+	docID, err := store.AddDocument(s.DB, collectionID, filename, "", "")
 	if err != nil {
 		return fmt.Errorf("registering document: %w", err)
 	}

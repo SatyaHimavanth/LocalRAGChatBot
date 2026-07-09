@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS documents (
 	collection_id INTEGER NOT NULL REFERENCES collections(id),
 	filename TEXT NOT NULL,
 	summary TEXT,
+	hash TEXT NOT NULL DEFAULT '',
+	content TEXT NOT NULL DEFAULT '',
 	created_at INTEGER NOT NULL
 );
 

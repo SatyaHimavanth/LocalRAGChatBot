@@ -1,1 +1,0 @@
-// Scaffold reference - the live implementation is in chatservice_live.go

@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
+	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/mattn/go-sqlite3 v1.14.47
 	github.com/tcpipuk/llama-go v0.0.0-20260702185908-8fdbada9fdd0
 	github.com/wailsapp/wails/v3 v3.0.0-alpha2.113

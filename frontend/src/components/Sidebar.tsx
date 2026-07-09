@@ -1,235 +1,70 @@
-// frontend/src/components/Sidebar.tsx
 import React from "react";
-import { Chat } from "../hooks/useChats";
-
-const PlusIcon = () => (
-	<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-		<line x1="12" y1="5" x2="12" y2="19" />
-		<line x1="5" y1="12" x2="19" y2="12" />
-	</svg>
-);
-
-const SearchIcon = () => (
-	<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-		<circle cx="11" cy="11" r="8" />
-		<line x1="21" y1="21" x2="16.65" y2="16.65" />
-	</svg>
-);
-
-const LibraryIcon = () => (
-	<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-		<rect x="3" y="3" width="7" height="7" />
-		<rect x="14" y="3" width="7" height="7" />
-		<rect x="3" y="14" width="7" height="7" />
-		<rect x="14" y="14" width="7" height="7" />
-	</svg>
-);
+import { Chat, Theme, ThemeVars, themeVars } from "../types";
+import { I } from "./Icons";
+import { ChatItem } from "./ChatItem";
 
 interface SidebarProps {
-	chats: Chat[];
-	activeChatId: number;
-	activeTab: "chat" | "search" | "collections";
-	onSelectChat: (id: number) => void;
-	onNewChat: () => void;
-	onTabChange: (tab: "chat" | "search" | "collections") => void;
+  chats: Chat[]; activeChatId: number; tab: string; sidebarOpen: boolean;
+  isIngesting: boolean; theme: Theme;
+  onNewChat: () => void; onSelectChat: (id: number) => void;
+  onTabChange: (tab: "chat"|"search"|"cols") => void;
+  onToggleSidebar: () => void;
+  onCtxMenu: (chatId: number, x: number, y: number) => void;
 }
 
-export function Sidebar({
-	chats,
-	activeChatId,
-	activeTab,
-	onSelectChat,
-	onNewChat,
-	onTabChange,
-}: SidebarProps) {
-	// Group chats by date
-	const now = new Date();
-	const oneDay = 24 * 60 * 60 * 1000;
+export function Sidebar({chats,activeChatId,tab,sidebarOpen,isIngesting,theme,onNewChat,onSelectChat,onTabChange,onToggleSidebar,onCtxMenu}:SidebarProps){
+  const T=themeVars[theme];
+  const now=Date.now(),day=86400000;
+  const pinnedChats=chats.filter(c=>c.pinned&&!c.archived);
+  const unpinned=chats.filter(c=>!c.pinned&&!c.archived);
+  const archivedChats=chats.filter(c=>c.archived);
 
-	const today = chats.filter(
-		(c) => now.getTime() - new Date(c.createdAt).getTime() < oneDay
-	);
-	const yesterday = chats.filter(
-		(c) =>
-			now.getTime() - new Date(c.createdAt).getTime() >= oneDay &&
-			now.getTime() - new Date(c.createdAt).getTime() < 2 * oneDay
-	);
-	const older = chats.filter(
-		(c) => now.getTime() - new Date(c.createdAt).getTime() >= 2 * oneDay
-	);
+  if(!sidebarOpen)return(
+    <div style={{width:48,overflow:"hidden",background:T.bg2,borderRight:"1px solid "+T.border,display:"flex",flexDirection:"column",alignItems:"center",height:"100%",transition:"width 0.2s",flexShrink:0,padding:"12px 0",gap:12}}>
+      <button onClick={onToggleSidebar} style={{background:"none",border:"none",cursor:"pointer",color:T.text3,padding:6}} title="Expand"><I.Logo/></button>
+      <button onClick={onNewChat} style={{background:"none",border:"none",cursor:"pointer",color:T.text3,padding:6}} title="New Chat"><I.Plus/></button>
+      <button onClick={()=>onTabChange("search")} style={{background:"none",border:"none",cursor:"pointer",color:tab==="search"?"rgba(99,102,241,0.8)":T.text3,padding:6}} title="Search"><I.SearchS/></button>
+      <button onClick={()=>{onTabChange("cols")}} style={{background:"none",border:"none",cursor:"pointer",color:tab==="cols"?"rgba(99,102,241,0.8)":T.text3,padding:6}} title="Collections">{isIngesting?<I.Spinner/>:<I.Lib/>}</button>
+    </div>
+  );
 
-	const renderChatGroup = (title: string, groupChats: Chat[]) => {
-		if (groupChats.length === 0) return null;
-		return (
-			<div style={{ marginBottom: "16px" }}>
-				<div
-					style={{
-						fontSize: "11px",
-						color: "rgba(255,255,255,0.35)",
-						textTransform: "uppercase",
-						letterSpacing: "0.5px",
-						marginBottom: "8px",
-						paddingLeft: "12px",
-					}}
-				>
-					{title}
-				</div>
-				{groupChats.map((chat) => (
-					<div
-						key={chat.id}
-						onClick={() => onSelectChat(chat.id)}
-						style={{
-							padding: "6px 12px",
-							margin: "2px 8px",
-							borderRadius: "8px",
-							cursor: "pointer",
-							fontSize: "13px",
-							color: "rgba(255,255,255,0.7)",
-							background:
-								chat.id === activeChatId ? "rgba(255,255,255,0.08)" : "transparent",
-							transition: "background 0.2s",
-							whiteSpace: "nowrap",
-							overflow: "hidden",
-							textOverflow: "ellipsis",
-						}}
-						onMouseEnter={(e) => {
-							if (chat.id !== activeChatId)
-								(e.target as HTMLElement).style.background = "rgba(255,255,255,0.04)";
-						}}
-						onMouseLeave={(e) => {
-							if (chat.id !== activeChatId)
-								(e.target as HTMLElement).style.background = "transparent";
-						}}
-					>
-						{chat.title}
-					</div>
-				))}
-			</div>
-		);
-	};
-
-	return (
-		<div
-			style={{
-				width: "240px",
-				background: "rgba(255,255,255,0.03)",
-				borderRight: "1px solid rgba(255,255,255,0.06)",
-				display: "flex",
-				flexDirection: "column",
-				height: "100%",
-				overflow: "hidden",
-			}}
-		>
-			{/* App title */}
-			<div
-				style={{
-					fontSize: "14px",
-					fontWeight: 600,
-					padding: "16px 14px 12px",
-					color: "rgba(255,255,255,0.85)",
-					borderBottom: "1px solid rgba(255,255,255,0.06)",
-				}}
-			>
-				LocalRAG Chat
-			</div>
-
-			{/* Action buttons */}
-			<div style={{ padding: "10px 10px 6px", display: "flex", flexDirection: "column", gap: "4px" }}>
-				<button
-					onClick={onNewChat}
-					style={navButtonStyle}
-					onMouseEnter={(e) => (e.target as HTMLElement).style.background = "rgba(255,255,255,0.08)"}
-					onMouseLeave={(e) => (e.target as HTMLElement).style.background = "transparent"}
-				>
-					<PlusIcon /> New Chat
-				</button>
-				<button
-					onClick={() => onTabChange("search")}
-					style={{
-						...navButtonStyle,
-						background:
-							activeTab === "search" ? "rgba(255,255,255,0.08)" : "transparent",
-					}}
-					onMouseEnter={(e) => (e.target as HTMLElement).style.background = "rgba(255,255,255,0.08)"}
-					onMouseLeave={(e) => {
-						if (activeTab !== "search")
-							(e.target as HTMLElement).style.background = "transparent";
-					}}
-				>
-					<SearchIcon /> Universal Search
-				</button>
-				<button
-					onClick={() => onTabChange("collections")}
-					style={{
-						...navButtonStyle,
-						background:
-							activeTab === "collections" ? "rgba(255,255,255,0.08)" : "transparent",
-					}}
-					onMouseEnter={(e) => (e.target as HTMLElement).style.background = "rgba(255,255,255,0.08)"}
-					onMouseLeave={(e) => {
-						if (activeTab !== "collections")
-							(e.target as HTMLElement).style.background = "transparent";
-					}}
-				>
-					<LibraryIcon /> Collections
-				</button>
-			</div>
-
-			{/* Chat history */}
-			<div
-				style={{
-					flex: 1,
-					overflowY: "auto",
-					paddingTop: "8px",
-					scrollbarWidth: "thin",
-					scrollbarColor: "rgba(255,255,255,0.1) transparent",
-				}}
-			>
-				<div
-					style={{
-						fontSize: "11px",
-						color: "rgba(255,255,255,0.35)",
-						textTransform: "uppercase",
-						letterSpacing: "0.5px",
-						marginBottom: "8px",
-						paddingLeft: "12px",
-					}}
-				>
-					Chats History
-				</div>
-				{renderChatGroup("Today", today)}
-				{renderChatGroup("Yesterday", yesterday)}
-				{renderChatGroup("Older", older)}
-
-				{chats.length === 0 && (
-					<div
-						style={{
-							fontSize: "12px",
-							color: "rgba(255,255,255,0.3)",
-							padding: "20px",
-							textAlign: "center",
-						}}
-					>
-						No chats yet. Start a new one!
-					</div>
-				)}
-			</div>
-		</div>
-	);
+  return(
+    <div style={{width:240,overflow:"hidden",background:T.bg2,borderRight:"1px solid "+T.border,display:"flex",flexDirection:"column",height:"100%",transition:"width 0.2s,background 0.3s",flexShrink:0}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 14px 12px",borderBottom:"1px solid "+T.border}}>
+        <span style={{fontSize:14,fontWeight:600,color:T.text,whiteSpace:"nowrap",display:"flex",alignItems:"center",gap:8}}><I.Logo/> LocalRAG</span>
+        <button onClick={onToggleSidebar} style={{background:"none",border:"none",cursor:"pointer",color:T.text3,padding:2}}><I.X/></button>
+      </div>
+      <div style={{padding:"10px 10px 6px",display:"flex",flexDirection:"column",gap:4}}>
+        <button onClick={onNewChat} style={navBtnStyle(T)}><I.Plus/> New Chat</button>
+        <button onClick={()=>onTabChange("search")} style={{...navBtnStyle(T),background:tab==="search"?"rgba(99,102,241,0.1)":"transparent"}}><I.SearchS/> Search</button>
+        <button onClick={()=>onTabChange("cols")} style={{...navBtnStyle(T),background:tab==="cols"?"rgba(99,102,241,0.1)":"transparent",position:"relative"}}>
+          {isIngesting&&<span style={{position:"absolute",left:8,top:"50%",marginTop:-7}}><I.Spinner/></span>}
+          <span style={{marginLeft:isIngesting?22:0,display:"flex",alignItems:"center",gap:8}}><I.Lib/> Collections{isIngesting&&<span style={{fontSize:10,color:"rgba(99,102,241,0.7)"}}> ingesting...</span>}</span>
+        </button>
+      </div>
+      <div style={{flex:1,overflowY:"auto",paddingTop:8}}>
+        <div style={{fontSize:11,color:T.text3,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:8,paddingLeft:12,whiteSpace:"nowrap"}}>Chat History</div>
+        <Group title="📌 Pinned" list={pinnedChats} T={T} activeChatId={activeChatId} onSelect={onSelectChat} onCtx={onCtxMenu}/>
+        <Group title="Today" list={unpinned.filter(c=>now-c.createdAt<day)} T={T} activeChatId={activeChatId} onSelect={onSelectChat} onCtx={onCtxMenu}/>
+        <Group title="Yesterday" list={unpinned.filter(c=>now-c.createdAt>=day&&now-c.createdAt<2*day)} T={T} activeChatId={activeChatId} onSelect={onSelectChat} onCtx={onCtxMenu}/>
+        <Group title="Older" list={unpinned.filter(c=>now-c.createdAt>=2*day)} T={T} activeChatId={activeChatId} onSelect={onSelectChat} onCtx={onCtxMenu}/>
+        {archivedChats.length>0&&<Group title="📦 Archived" list={archivedChats} T={T} activeChatId={activeChatId} onSelect={onSelectChat} onCtx={onCtxMenu}/>}
+        {chats.length===0&&<div style={{fontSize:12,color:T.text3,padding:20,textAlign:"center",whiteSpace:"nowrap"}}>No chats yet.</div>}
+      </div>
+    </div>
+  );
 }
 
-const navButtonStyle: React.CSSProperties = {
-	display: "flex",
-	alignItems: "center",
-	gap: "8px",
-	padding: "8px 12px",
-	border: "none",
-	borderRadius: "8px",
-	cursor: "pointer",
-	fontSize: "13px",
-	color: "rgba(255,255,255,0.75)",
-	background: "transparent",
-	width: "100%",
-	textAlign: "left",
-	transition: "background 0.2s",
-};
+function Group({title,list,T,activeChatId,onSelect,onCtx}:{title:string;list:Chat[];T:ThemeVars;activeChatId:number;onSelect:(id:number)=>void;onCtx:(id:number,x:number,y:number)=>void}){
+  if(list.length===0)return null;
+  return(
+    <div style={{marginBottom:16}}>
+      <div style={{fontSize:11,color:T.text3,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:8,paddingLeft:12}}>{title}</div>
+      {list.map(c=>(
+        <ChatItem key={c.id} chat={c} isActive={c.id===activeChatId} T={T} onSelect={()=>onSelect(c.id)} onCtx={(x,y)=>onCtx(c.id,x,y)}/>
+      ))}
+    </div>
+  );
+}
+
+const navBtnStyle=(T:ThemeVars):React.CSSProperties=>({display:"flex",alignItems:"center",gap:8,padding:"8px 12px",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,color:T.text2,background:"transparent",width:"100%",textAlign:"left",transition:"background 0.2s"});
