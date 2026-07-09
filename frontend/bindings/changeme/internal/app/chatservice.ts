@@ -67,6 +67,20 @@ export function GetDocumentsByCollection(collectionID: number): $CancellableProm
     return $Call.ByID(1237202507, collectionID);
 }
 
+/**
+ * GetMessageSources returns source chunks for a given message.
+ */
+export function GetMessageSources(msgID: number): $CancellablePromise<store$0.SourceChunkRef[] | null> {
+    return $Call.ByID(2286181287, msgID);
+}
+
+/**
+ * GetSessionSources returns source chunks all messages in a session.
+ */
+export function GetSessionSources(sessionID: number): $CancellablePromise<store$0.SourceChunkRef[] | null> {
+    return $Call.ByID(2419631210, sessionID);
+}
+
 export function IngestFile(collectionID: number, filename: string, fileContent: string): $CancellablePromise<void> {
     return $Call.ByID(1283934766, collectionID, filename, fileContent);
 }

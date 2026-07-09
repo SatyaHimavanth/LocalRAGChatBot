@@ -39,3 +39,17 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 	content TEXT NOT NULL,
 	created_at INTEGER NOT NULL
 );
+
+-- Stores source chunks referenced in AI responses
+CREATE TABLE IF NOT EXISTS chat_message_sources (
+	id INTEGER PRIMARY KEY,
+	message_id INTEGER NOT NULL REFERENCES chat_messages(id),
+	session_id INTEGER NOT NULL REFERENCES chat_sessions(id),
+	chunk_id INTEGER NOT NULL,
+	filename TEXT NOT NULL,
+	collection_id INTEGER NOT NULL,
+	collection_name TEXT NOT NULL,
+	similarity_score REAL NOT NULL DEFAULT 0,
+	content TEXT NOT NULL,
+	ref_number INTEGER NOT NULL
+);

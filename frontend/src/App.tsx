@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Events } from "@wailsio/runtime";
-import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, UploadFile, GetDocumentContent } from "../bindings/changeme/internal/app/chatservice";
+import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, UploadFile, GetDocumentContent, GetSessionSources } from "../bindings/changeme/internal/app/chatservice";
 import { Message, Chat, Collection, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg } from "./types";
 import { I } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
@@ -67,9 +67,39 @@ export default function App() {
 
   useEffect(()=>{
     const offT=Events.On("chat:token",(e:any)=>{setStatusMsgs([]);const sid=e.data.sessionId;setChats(p=>p.map(c=>{if(c.id!==sid)return c;const ms=[...c.messages];const last=ms[ms.length-1];if(last&&last.sender==="ai"){ms[ms.length-1]={...last,text:last.text+e.data.token}}else{ms.push({id:crypto.randomUUID(),sender:"ai",text:e.data.token})}return{...c,messages:ms}}))});
-    const offD=Events.On("chat:done",()=>{setGen(false);setStatusMsgs([])});
+    const offD=Events.On("chat:done",(e:any)=>{
+      setGen(false);setStatusMsgs([]);
+      // chat:done now carries msgId from backend — update the last AI message's id to match
+      if (e?.data?.msgId) {
+        const sid = e.data.sessionId;
+        const backendMsgId = e.data.msgId;
+        setChats(p=>p.map(c=>{
+          if(c.id!==sid)return c;
+          const ms = [...c.messages];
+          // Find the last AI message (which had a UUID id) and replace its id with the backend msgId
+          for(let i=ms.length-1;i>=0;i--){
+            if(ms[i].sender==="ai"){
+              ms[i] = {...ms[i], id: backendMsgId.toString()};
+              break;
+            }
+          }
+          return {...c, messages: ms};
+        }));
+      }
+    });
     const offStatus=Events.On("chat:status",(e:any)=>{setStatusMsgs([{id:crypto.randomUUID(),sender:"system",text:e.data.label}])});
-    return()=>{offT();offD();offStatus()};
+    const offSources=Events.On("chat:sources",(e:any)=>{
+      const sid=e.data.sessionId;
+      const msgId=e.data.msgId;
+      const sources=e.data.sources;
+      if (sources && msgId) {
+        setChats(p=>p.map(c=>{
+          if(c.id!==sid)return c;
+          return {...c, messageSources:{...c.messageSources, [msgId]:sources}};
+        }));
+      }
+    });
+    return()=>{offT();offD();offStatus();offSources()};
   },[]);
 
   const loadCols=async()=>{try{const c:any=await GetCollections();if(c?.length){setCols(c);setActiveColId(c[0].id)}}catch(e){console.error(e)}};
@@ -77,7 +107,27 @@ export default function App() {
   useEffect(()=>{if(tab==="cols"){loadDocs(activeColId);setSelectedDocId(null);setSelectedDocContent("")}},[activeColId,tab]);
 
   const loadChats=async()=>{
-    try{const s:any=await GetChats();if(s?.length){const loaded:Chat[]=[];for(const sess of s){const ms:any=await GetChatMessages(sess.id);loaded.push({id:sess.id,title:sess.title||"New Chat",messages:(ms||[]).map((m:any)=>({id:m.id.toString(),sender:m.role==="user"?"user":"ai",text:m.content})),createdAt:sess.createdAt*1000,archived:sess.archived===true,pinned:sess.pinned===true})}setChats(loaded);if(loaded.length&&!activeChatId)setActiveChatId(loaded[0].id)}else if(!createdInitialChat.current){createdInitialChat.current=true;newChat()}}catch(e){console.error(e)}
+    try{const s:any=await GetChats();if(s?.length){const loaded:Chat[]=[];for(const sess of s){const ms:any=await GetChatMessages(sess.id);
+      // Load source references for this session
+      let msgSources: Record<number, any[]> = {};
+      try {
+        const sources: any = await GetSessionSources(sess.id);
+        if (sources?.length > 0) {
+          for (const src of sources) {
+            if (!msgSources[src.messageId]) msgSources[src.messageId] = [];
+            msgSources[src.messageId].push({
+              refNumber: src.refNumber,
+              chunkId: src.chunkId,
+              content: src.content,
+              filename: src.filename,
+              collectionId: src.collectionId,
+              collectionName: src.collectionName,
+              similarity: src.similarity,
+            });
+          }
+        }
+      } catch(e) { /* ignore source loading errors */ }
+      loaded.push({id:sess.id,title:sess.title||"New Chat",messages:(ms||[]).map((m:any)=>({id:m.id.toString(),sender:m.role==="user"?"user":"ai",text:m.content})),createdAt:sess.createdAt*1000,archived:sess.archived===true,pinned:sess.pinned===true,messageSources:msgSources})}setChats(loaded);if(loaded.length&&!activeChatId)setActiveChatId(loaded[0].id)}else if(!createdInitialChat.current){createdInitialChat.current=true;newChat()}}catch(e){console.error(e)}
   };
 
   const newChat=async()=>{const empty=chats.find(c=>c.messages.length===0&&!c.archived);if(empty){setActiveChatId(empty.id);setTab("chat");return}try{const id=await CreateChat("New Chat",activeColId);setChats(p=>[{id,title:"New Chat",messages:[],createdAt:Date.now(),archived:false,pinned:false},...p]);setActiveChatId(id);setTab("chat")}catch(e){console.error(e)}};
@@ -195,34 +245,34 @@ export default function App() {
 
       {/* Context Menu */}
       {ctxMenuChatId !== null && (() => { const chat = chats.find(c => c.id === ctxMenuChatId); if (!chat) return null; const a = chat.archived; return (
-        <div ref={ctxRef} style={{ position: "fixed", zIndex: 999, left: ctxMenuPos.x, top: ctxMenuPos.y, background: "#1e1f36", border: "1px solid rgba(128,128,128,0.15)", borderRadius: 10, boxShadow: "0 12px 40px rgba(0,0,0,0.2)", padding: "4px", minWidth: 170 }}>
-          {!a && ctxMenuItem("Rename", <I.Rename />, () => openRename(ctxMenuChatId!))}
-          {ctxMenuItem("Delete", <I.Trash />, () => { confirmDeleteChat(ctxMenuChatId!); }, true)}
-          {a ? ctxMenuItem("Unarchive", <I.Unarchive />, () => handleUnarchiveChat(ctxMenuChatId!)) : ctxMenuItem("Archive", <I.Archive />, () => handleArchiveChat(ctxMenuChatId!))}
-          {!a && ctxMenuItem(chat.pinned ? "Unpin" : "Pin", <I.Pin />, () => handlePinChat(ctxMenuChatId!))}
+        <div ref={ctxRef} style={{ position: "fixed", zIndex: 999, left: ctxMenuPos.x, top: ctxMenuPos.y, background: T.bg2, border: "1px solid "+T.border, borderRadius: 10, boxShadow: "0 12px 40px rgba(0,0,0,0.2)", padding: "4px", minWidth: 170 }}>
+          {!a && ctxMenuItem("Rename", <I.Rename />, () => openRename(ctxMenuChatId!), T)}
+          {ctxMenuItem("Delete", <I.Trash />, () => { confirmDeleteChat(ctxMenuChatId!); }, T, true)}
+          {a ? ctxMenuItem("Unarchive", <I.Unarchive />, () => handleUnarchiveChat(ctxMenuChatId!), T) : ctxMenuItem("Archive", <I.Archive />, () => handleArchiveChat(ctxMenuChatId!), T)}
+          {!a && ctxMenuItem(chat.pinned ? "Unpin" : "Pin", <I.Pin />, () => handlePinChat(ctxMenuChatId!), T)}
         </div>); })()}
 
       {/* Upload Modal */}
-      <FileUploadModal open={showUploadModal} onClose={() => { setShowUploadModal(false); loadCols(); loadDocs(activeColId); }} collectionId={activeColId} collectionName={activeCol?.name || "Unknown"} onUpload={processFile} onIngestPaste={handleIngestPaste} />
+      <FileUploadModal open={showUploadModal} onClose={() => { setShowUploadModal(false); loadCols(); loadDocs(activeColId); }} collectionId={activeColId} collectionName={activeCol?.name || "Unknown"} onUpload={processFile} onIngestPaste={handleIngestPaste} theme={theme} />
 
       {/* Rename Modal */}
-      <Modal open={renameModal.open} onClose={() => setRenameModal({ open: false, chatId: 0, value: "" })} title="Rename Chat">
-        <input value={renameModal.value} onChange={e => setRenameModal(p => ({ ...p, value: e.target.value }))} onKeyDown={e => e.key === "Enter" && submitRename()} autoFocus style={{ width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "#fff", fontSize: 13, outline: "none", marginBottom: 12 }} />
+      <Modal open={renameModal.open} onClose={() => setRenameModal({ open: false, chatId: 0, value: "" })} title="Rename Chat" theme={theme}>
+        <input value={renameModal.value} onChange={e => setRenameModal(p => ({ ...p, value: e.target.value }))} onKeyDown={e => e.key === "Enter" && submitRename()} autoFocus style={{ width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid "+T.border, background: T.inputBg, color: T.text, fontSize: 13, outline: "none", marginBottom: 12 }} />
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <button onClick={() => setRenameModal({ open: false, chatId: 0, value: "" })} style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer", fontSize: 13, color: "rgba(255,255,255,0.7)", background: "transparent" }}>Cancel</button>
+          <button onClick={() => setRenameModal({ open: false, chatId: 0, value: "" })} style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid "+T.border, cursor: "pointer", fontSize: 13, color: T.text2, background: "transparent" }}>Cancel</button>
           <button onClick={submitRename} style={{ padding: "8px 16px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500, color: "#fff", background: "rgba(99,102,241,0.8)" }}>Rename</button>
         </div>
       </Modal>
 
-      <ConfirmModal open={confirm.open} title={confirm.title} message={confirm.message} detail={confirm.detail} confirmLabel={confirm.confirmLabel} onConfirm={confirm.onConfirm} onCancel={() => setConfirm({ open: false, title: "", message: "", detail: "", confirmLabel: "", onConfirm: () => {} })} />
+      <ConfirmModal open={confirm.open} title={confirm.title} message={confirm.message} detail={confirm.detail} confirmLabel={confirm.confirmLabel} onConfirm={confirm.onConfirm} onCancel={() => setConfirm({ open: false, title: "", message: "", detail: "", confirmLabel: "", onConfirm: () => {} })} theme={theme} />
       <Toast toasts={toasts} onDismiss={dismissToast} />
     </div>
   </>);
 }
 
-function ctxMenuItem(label: string, icon: React.ReactNode, onClick: () => void, isDanger?: boolean) {
+function ctxMenuItem(label: string, icon: React.ReactNode, onClick: () => void, T: any, isDanger?: boolean) {
   return (
-    <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 13, color: isDanger ? "rgba(239,68,68,0.85)" : "rgba(255,255,255,0.75)" }}
+    <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 13, color: isDanger ? "rgba(239,68,68,0.85)" : T.text2 }}
       onMouseEnter={e => (e.target as HTMLElement).style.background = "rgba(128,128,128,0.06)"}
       onMouseLeave={e => (e.target as HTMLElement).style.background = "transparent"}>
       {icon} {label}

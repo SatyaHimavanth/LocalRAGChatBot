@@ -402,8 +402,8 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		// Get optimal context size
 		ctxSize := getOptimalContextSize()
 
-		// Build messages with both context AND conversation history
-		messages := buildMessagesWithBudget(chunks, prompt, history, ctxSize)
+		// Build messages with both context AND conversation history (also gets source refs)
+		messages, sourceRefs := buildMessagesWithBudget(chunks, prompt, history, ctxSize)
 
 		chatCtx, err := s.Engine.ChatModel.NewContext(llama.WithContext(ctxSize))
 		if err != nil {
@@ -418,14 +418,45 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		})
 
 		var fullResponse strings.Builder
+		var msgID int64
 		for {
 			select {
 			case delta, ok := <-deltas:
 				if !ok {
 					if s.DB != nil && fullResponse.Len() > 0 {
-						store.AddChatMessage(s.DB, sessionID, "assistant", fullResponse.String())
+						// Persist the AI message
+						msgID, err = store.AddChatMessage(s.DB, sessionID, "assistant", fullResponse.String())
+						if err == nil && len(sourceRefs) > 0 {
+							// Store source references
+							colName := s.getCollectionName(collectionID)
+							for _, sr := range sourceRefs {
+								filename := s.getChunkFilename(sr.chunk.ChunkID)
+								score := 1.0 / (1.0 + math.Abs(sr.chunk.Score))
+								store.AddMessageSource(s.DB, msgID, sessionID, sr.chunk.ChunkID, filename, collectionID, colName, score, sr.chunk.Content, sr.refNum)
+							}
+							// Emit sources to frontend with filenames
+							sourceMap := make([]map[string]any, 0, len(sourceRefs))
+							for _, sr := range sourceRefs {
+								fn := s.getChunkFilename(sr.chunk.ChunkID)
+								score := 1.0 / (1.0 + math.Abs(sr.chunk.Score))
+								sourceMap = append(sourceMap, map[string]any{
+									"refNumber":      sr.refNum,
+									"chunkId":        sr.chunk.ChunkID,
+									"content":        sr.chunk.Content,
+									"filename":       fn,
+									"collectionId":   collectionID,
+									"collectionName": colName,
+									"similarity":     score,
+								})
+							}
+							s.emit("chat:sources", map[string]any{
+								"sessionId": sessionID,
+								"msgId":     msgID,
+								"sources":   sourceMap,
+							})
+						}
+						s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": msgID})
 					}
-					s.emit("chat:done", sessionID)
 					return
 				}
 				fullResponse.WriteString(delta.Content)
@@ -439,7 +470,7 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 						"sessionId": sessionID,
 						"token":     fmt.Sprintf("\n[Error: %v]\n", err),
 					})
-					s.emit("chat:done", sessionID)
+					s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": int64(0)})
 					return
 				}
 			}
@@ -840,6 +871,31 @@ func (s *ChatService) getCollectionName(collectionID int64) string {
 	return name
 }
 
+// GetMessageSources returns source chunks for a given message.
+func (s *ChatService) GetMessageSources(msgID int64) ([]store.SourceChunkRef, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	return store.GetMessageSources(s.DB, msgID)
+}
+
+// GetSessionSources returns source chunks all messages in a session.
+func (s *ChatService) GetSessionSources(sessionID int64) ([]store.SourceChunkRef, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	all, err := store.GetSessionSources(s.DB, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	// Flatten the map into a single slice
+	var result []store.SourceChunkRef
+	for _, sources := range all {
+		result = append(result, sources...)
+	}
+	return result, nil
+}
+
 // ════════════════════════════════════════════════
 //  Helpers
 // ════════════════════════════════════════════════
@@ -888,7 +944,12 @@ func (s *ChatService) loadConversationHistory(sessionID int64) []llama.ChatMessa
 	return history
 }
 
-func buildMessagesWithBudget(chunks []store.ScoredChunk, prompt string, history []llama.ChatMessage, ctxSize int) []llama.ChatMessage {
+type chunkRef struct {
+	refNum int
+	chunk  store.ScoredChunk
+}
+
+func buildMessagesWithBudget(chunks []store.ScoredChunk, prompt string, history []llama.ChatMessage, ctxSize int) ([]llama.ChatMessage, []chunkRef) {
 	// Scale character budgets proportionally to context window size
 	ratio := float64(ctxSize) / float64(defaultContextSize)
 	scaledMaxTotal := int(float64(maxTotalChars) * ratio)
@@ -901,33 +962,34 @@ func buildMessagesWithBudget(chunks []store.ScoredChunk, prompt string, history 
 		promptBudget = responseBudget
 	}
 
-	// Build context string from RAG chunks, capped
+	// Build context string from RAG chunks with numbered references, capped
 	var contextBuilder strings.Builder
-	for _, chunk := range chunks {
+	var sourceRefs []chunkRef
+	for i, chunk := range chunks {
 		if chunk.Content == "" {
 			continue
 		}
-		if contextBuilder.Len()+len(chunk.Content)+3 > scaledMaxContext {
-			remaining := scaledMaxContext - contextBuilder.Len()
-			if remaining > 10 {
-				contextBuilder.WriteString("- ")
-				if len(chunk.Content) > remaining-3 {
-					contextBuilder.WriteString(chunk.Content[:remaining-10] + "...\n")
-				} else {
-					contextBuilder.WriteString(chunk.Content)
-					contextBuilder.WriteByte('\n')
-				}
+		refNum := i + 1
+		if contextBuilder.Len()+len(chunk.Content)+10 > scaledMaxContext {
+			if contextBuilder.Len() > 0 {
+				break
 			}
+			// Truncate first chunk
+			trunc := chunk.Content
+			if len(trunc) > scaledMaxContext-20 {
+				trunc = trunc[:scaledMaxContext-20] + "..."
+			}
+			contextBuilder.WriteString(fmt.Sprintf("[%d] %s\n", refNum, trunc))
+			sourceRefs = append(sourceRefs, chunkRef{refNum: refNum, chunk: chunk})
 			break
 		}
-		contextBuilder.WriteString("- ")
-		contextBuilder.WriteString(chunk.Content)
-		contextBuilder.WriteByte('\n')
+		contextBuilder.WriteString(fmt.Sprintf("[%d] %s\n", refNum, chunk.Content))
+		sourceRefs = append(sourceRefs, chunkRef{refNum: refNum, chunk: chunk})
 	}
 
 	systemPrompt := "You are a helpful AI assistant."
 	if contextBuilder.Len() > 0 {
-		systemPrompt += " Use the Document Context below to answer questions. If the context doesn't contain relevant information, answer from your general knowledge."
+		systemPrompt += " Use the Document Context below to answer questions. Reference your sources by their [N] numbers in your answer (e.g. 'According to [1]...' or 'As mentioned in the document[1]...'). Always cite sources when using information from the document context."
 		systemPrompt += "\n\nDocument Context:\n" + contextBuilder.String()
 	} else {
 		systemPrompt += " You have the conversation history below. Answer from your general knowledge. If the user asks about specific documents they uploaded, let them know no documents are available."
@@ -959,5 +1021,5 @@ func buildMessagesWithBudget(chunks []store.ScoredChunk, prompt string, history 
 	// Add current user prompt
 	messages = append(messages, llama.ChatMessage{Role: "user", Content: prompt})
 
-	return messages
+	return messages, sourceRefs
 }

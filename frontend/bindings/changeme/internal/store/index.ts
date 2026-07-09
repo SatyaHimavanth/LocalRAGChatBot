@@ -5,5 +5,6 @@ export type {
     ChatMessage,
     ChatSession,
     Collection,
-    Document
+    Document,
+    SourceChunkRef
 } from "./models.js";

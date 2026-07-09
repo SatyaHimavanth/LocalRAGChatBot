@@ -35,3 +35,16 @@ export interface Document {
     "createdAt": number;
     "chunkCount": number;
 }
+
+export interface SourceChunkRef {
+    "id": number;
+    "messageId": number;
+    "sessionId": number;
+    "chunkId": number;
+    "filename": string;
+    "collectionId": number;
+    "collectionName": string;
+    "similarity": number;
+    "content": string;
+    "refNumber": number;
+}

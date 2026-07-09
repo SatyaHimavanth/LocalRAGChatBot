@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, ChangeEvent } from "react";
 import { Events } from "@wailsio/runtime";
-import { FileUploadItem } from "../types";
+import { FileUploadItem, Theme, themeVars } from "../types";
 import { Modal } from "./Modal";
 import { I } from "./Icons";
 
@@ -11,9 +11,10 @@ interface FileUploadModalProps {
   collectionName: string;
   onUpload: (file: File, replace: boolean) => Promise<string>;
   onIngestPaste?: (filename: string, content: string) => Promise<string>;
+  theme: Theme;
 }
 
-export function FileUploadModal({open,onClose,collectionId,collectionName,onUpload,onIngestPaste}:FileUploadModalProps){
+export function FileUploadModal({open,onClose,collectionId,collectionName,onUpload,onIngestPaste,theme}:FileUploadModalProps){
   const [mode, setMode] = useState<"upload"|"paste">("upload");
   const [files,setFiles]=useState<FileUploadItem[]>([]);
   const [uploading,setUploading]=useState(false);
@@ -24,40 +25,32 @@ export function FileUploadModal({open,onClose,collectionId,collectionName,onUplo
   const [pastePct, setPastePct] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const [pasteLabel, setPasteLabel] = useState("");
+  const T = themeVars[theme];
 
-  // Listen for ingest:progress events — updates per-file progress bars with actual pct
   useEffect(() => {
     if (!uploading && !pasting) return;
     const off = Events.On("ingest:progress", (e: any) => {
       if (!e.data) return;
       const pct = e.data.pct || 0;
       const step = e.data.step;
-      const label = e.data.label || "";
-
       if (mode === "upload" && uploading) {
         setFiles(prev => {
           const processing = [...prev].reverse().find(f => f.status === "processing");
           if (!processing) return prev;
-          let msg = label;
-          if (step === "chunking") msg = "Extracting text...";
-          else if (step === "chunked") msg = `Splitting into ${e.data.detail}`;
-          else if (step === "embedding") msg = `Embedding ${e.data.detail || label}`;
-          else if (step === "complete") msg = "✓ Done";
+          let msg = step === "chunking" ? "Extracting text..." : step === "chunked" ? `Splitting into ${e.data.detail}` : step === "embedding" ? `Embedding ${e.data.detail || e.data.label}` : "✓ Done";
           return prev.map(f => f.id === processing.id ? { ...f, progressMsg: msg, progressPct: pct } : f);
         });
       }
-
       if (mode === "paste" && pasting) {
         if (step === "chunking") { setPasteLabel("Extracting text..."); setPastePct(2); }
         else if (step === "chunked") { setPasteLabel(`Splitting into ${e.data.detail}`); setPastePct(5); }
-        else if (step === "embedding") { setPasteLabel(`Embedding ${e.data.detail || label}`); setPastePct(pct); }
+        else if (step === "embedding") { setPasteLabel(`Embedding ${e.data.detail || e.data.label}`); setPastePct(pct); }
         else if (step === "complete") { setPasteLabel("✓ Done!"); setPastePct(100); }
       }
     });
     return () => off();
   }, [uploading, pasting, mode]);
 
-  // Reset when opened
   useEffect(() => {
     if (open) {
       setFiles([]); setPasteFilename(""); setPasteContent(""); setPasteStatus("");
@@ -67,8 +60,7 @@ export function FileUploadModal({open,onClose,collectionId,collectionName,onUplo
 
   const handleSelect=(e:ChangeEvent<HTMLInputElement>)=>{
     const selected=Array.from(e.target.files||[]);
-    const items:FileUploadItem[]=selected.map(f=>({id:crypto.randomUUID(),file:f,status:"pending",progressPct:0}));
-    setFiles(p=>[...p,...items]);
+    setFiles(p=>[...p,...selected.map(f=>({id:crypto.randomUUID(),file:f,status:"pending" as const,progressPct:0}))]);
     if(e.target)e.target.value="";
   };
 
@@ -108,27 +100,28 @@ export function FileUploadModal({open,onClose,collectionId,collectionName,onUplo
     setPasting(false);
   };
 
+  const B = { background: T.bg2, border: "1px solid "+T.border, color: T.text, fontSize: 13, outline: "none" as const, width: "100%", padding: "10px 14px", borderRadius: 8 };
+
   return(
-    <Modal open={open} onClose={onClose} title="Add Document" wide>
-      <div style={{fontSize:12,color:"rgba(255,255,255,0.5)",marginBottom:12}}>
-        Target: <strong style={{color:"rgba(255,255,255,0.85)"}}>{collectionName}</strong>
+    <Modal open={open} onClose={onClose} title="Add Document" wide theme={theme}>
+      <div style={{fontSize:12,color:T.text3,marginBottom:12}}>
+        Target: <strong style={{color:T.text}}>{collectionName}</strong>
       </div>
 
-      <div style={{display:"flex",gap:4,marginBottom:12,background:"rgba(255,255,255,0.04)",borderRadius:8,padding:3}}>
-        <button onClick={()=>!uploading&&!pasting&&setMode("upload")} style={{flex:1,padding:"6px",borderRadius:6,border:"none",cursor:uploading||pasting?"default":"pointer",fontSize:12,fontWeight:500,color:mode==="upload"?"#fff":"rgba(255,255,255,0.5)",background:mode==="upload"?"rgba(99,102,241,0.6)":"transparent"}}>
-          <I.Paperclip/> Upload Files
-        </button>
-        <button onClick={()=>!uploading&&!pasting&&setMode("paste")} style={{flex:1,padding:"6px",borderRadius:6,border:"none",cursor:uploading||pasting?"default":"pointer",fontSize:12,fontWeight:500,color:mode==="paste"?"#fff":"rgba(255,255,255,0.5)",background:mode==="paste"?"rgba(99,102,241,0.6)":"transparent"}}>
-          Paste Text
-        </button>
+      <div style={{display:"flex",gap:4,marginBottom:12,background:T.bg2,borderRadius:8,padding:3}}>
+        {(["upload","paste"] as const).map(m => (
+          <button key={m} onClick={()=>!uploading&&!pasting&&setMode(m)} style={{flex:1,padding:"6px",borderRadius:6,border:"none",cursor:uploading||pasting?"default":"pointer",fontSize:12,fontWeight:500,color:mode===m?"#fff":T.text3,background:mode===m?"rgba(99,102,241,0.6)":"transparent"}}>
+            {m==="upload"?<><I.Paperclip/> Upload Files</>:<>Paste Text</>}
+          </button>
+        ))}
       </div>
 
       {mode === "upload" && (
         <>
-      <div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginBottom:8}}>PDF, DOCX, TXT supported</div>
+      <div style={{fontSize:11,color:T.text3,marginBottom:8}}>PDF, DOCX, TXT supported</div>
       <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.txt" onChange={handleSelect} style={{display:"none"}} disabled={uploading}/>
       {!uploading && (
-        <div style={{padding:"24px",borderRadius:8,border:"2px dashed rgba(255,255,255,0.15)",textAlign:"center",color:"rgba(255,255,255,0.4)",fontSize:13,marginBottom:12,cursor:"pointer"}}
+        <div style={{padding:"24px",borderRadius:8,border:"2px dashed "+T.border,textAlign:"center",color:T.text3,fontSize:13,marginBottom:12,cursor:"pointer"}}
           onClick={()=>fileRef.current?.click()}
           onDragOver={e=>e.preventDefault()}
           onDrop={e=>{e.preventDefault();const dt=e.dataTransfer?.files;if(dt)handleSelect({target:{files:dt}} as any)}}
@@ -140,24 +133,23 @@ export function FileUploadModal({open,onClose,collectionId,collectionName,onUplo
       {files.length>0&&(
         <div style={{maxHeight:300,overflowY:"auto",marginBottom:8}}>
           {files.map(f=>(
-            <div key={f.id} style={{padding:"6px 0",marginBottom:4,borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
+            <div key={f.id} style={{padding:"6px 0",marginBottom:4,borderBottom:"1px solid "+T.border}}>
               <div style={{display:"flex",alignItems:"center",gap:8,fontSize:12}}>
-                <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"rgba(255,255,255,0.85)"}}>{f.file.name}</span>
-                {f.status==="pending"&&<span style={{color:"rgba(255,255,255,0.4)",flexShrink:0}}>Pending</span>}
+                <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:T.text}}>{f.file.name}</span>
+                {f.status==="pending"&&<span style={{color:T.text3,flexShrink:0}}>Pending</span>}
                 {f.status==="processing"&&<span style={{flexShrink:0}}><I.Spinner/></span>}
                 {f.status==="success"&&<span style={{color:"rgba(34,197,94,0.8)",flexShrink:0}}>✓</span>}
                 {f.status==="replaced"&&<span style={{color:"rgba(34,197,94,0.8)",flexShrink:0}}>↻</span>}
                 {f.status==="duplicate"&&<span style={{color:"rgba(234,179,8,0.8)",fontSize:10,flexShrink:0}}>Duplicate</span>}
                 {f.status==="error"&&<span style={{color:"rgba(239,68,68,0.8)",fontSize:10,flexShrink:0}} title={f.message}>{f.message||"Failed"}</span>}
-                {f.status==="pending"&&<button onClick={()=>removeFile(f.id)} style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,0.3)",padding:2,flexShrink:0}}><I.X/></button>}
+                {f.status==="pending"&&<button onClick={()=>removeFile(f.id)} style={{background:"none",border:"none",cursor:"pointer",color:T.text3,padding:2,flexShrink:0}}><I.X/></button>}
               </div>
-              {/* Per-file progress bar — only during processing, uses actual pct */}
               {f.status==="processing" && (
                 <div style={{marginTop:4,marginLeft:4,display:"flex",alignItems:"center",gap:6}}>
-                  <div style={{flex:1,height:4,borderRadius:2,background:"rgba(255,255,255,0.08)",overflow:"hidden"}}>
+                  <div style={{flex:1,height:4,borderRadius:2,background:T.border,overflow:"hidden"}}>
                     <div style={{width:Math.max(2, Math.min(100, f.progressPct||0))+"%",height:"100%",borderRadius:2,background:"rgba(99,102,241,0.7)",transition:"width 0.3s ease"}}/>
                   </div>
-                  <span style={{fontSize:10,color:"rgba(255,255,255,0.5)"}}>{f.progressMsg||""}</span>
+                  <span style={{fontSize:10,color:T.text3}}>{f.progressMsg||""}</span>
                 </div>
               )}
               {f.status==="success" && f.progressMsg && (
@@ -169,14 +161,12 @@ export function FileUploadModal({open,onClose,collectionId,collectionName,onUplo
       )}
 
       {pendingCount>0&&!uploading&&(
-        <button onClick={uploadAll} style={{width:"100%",padding:"10px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,color:"#fff",background:"rgba(99,102,241,0.8)",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-          Embed {pendingCount} File{pendingCount>1?'s':''}
-        </button>
+        <button onClick={uploadAll} style={btnStyle}>Embed {pendingCount} File{pendingCount>1?'s':''}</button>
       )}
       {hasCompleted&&(
         <div style={{display:"flex",flexDirection:"column",gap:6}}>
           {successCount > 0 && <div style={{fontSize:12,color:"rgba(34,197,94,0.8)",textAlign:"center"}}>✓ {successCount} succeeded{errorCount>0?`, ${errorCount} failed`:''}</div>}
-          <button onClick={onClose} style={{width:"100%",padding:"10px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,color:"#fff",background:errorCount===0?"rgba(34,197,94,0.8)":"rgba(99,102,241,0.8)"}}>
+          <button onClick={onClose} style={{...btnStyle,background:errorCount===0?"rgba(34,197,94,0.8)":"rgba(99,102,241,0.8)"}}>
             {errorCount===0 ? "✓ Done" : "Close"}
           </button>
         </div>
@@ -186,24 +176,23 @@ export function FileUploadModal({open,onClose,collectionId,collectionName,onUplo
 
       {mode === "paste" && onIngestPaste && (
         <div style={{display:"flex",flexDirection:"column",gap:8}}>
-          <input value={pasteFilename} onChange={e=>{if (pasteStatus.startsWith("✓")) setPasteStatus(""); setPasteFilename(e.target.value);}} placeholder="Filename (min 3 chars)" style={{width:"100%",padding:"10px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",color:"#fff",fontSize:13,outline:"none",opacity:pasting?0.5:1}} disabled={pasting}/>
+          <input value={pasteFilename} onChange={e=>{if (pasteStatus.startsWith("✓")) setPasteStatus(""); setPasteFilename(e.target.value);}} placeholder="Filename (min 3 chars)" style={{...B,border:"1px solid "+T.border,background:T.bg2,color:T.text,opacity:pasting?0.5:1}} disabled={pasting}/>
           {pasteFilename.trim().length > 0 && pasteFilename.trim().length < 3 && !pasting && (
             <div style={{fontSize:10,color:"rgba(239,68,68,0.7)",marginTop:-6}}>Filename must be at least 3 characters</div>
           )}
-          <textarea value={pasteContent} onChange={e=>{if (pasteStatus.startsWith("✓")) setPasteStatus(""); setPasteContent(e.target.value);}} placeholder="Paste document content..." style={{width:"100%",minHeight:100,padding:"10px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",color:"#fff",fontSize:12,outline:"none",resize:"vertical",fontFamily:"monospace"}} disabled={pasting}/>
+          <textarea value={pasteContent} onChange={e=>{if (pasteStatus.startsWith("✓")) setPasteStatus(""); setPasteContent(e.target.value);}} placeholder="Paste document content..." style={{...B,minHeight:100,resize:"vertical",fontFamily:"monospace",fontSize:12}} disabled={pasting}/>
 
-          {/* Paste progress bar — uses actual pct from events */}
           {pasting && pasteLabel && (
             <div style={{padding:"8px 12px",borderRadius:6,background:"rgba(99,102,241,0.08)",display:"flex",alignItems:"center",gap:8}}>
-              <div style={{flex:1,height:4,borderRadius:2,background:"rgba(255,255,255,0.08)",overflow:"hidden"}}>
+              <div style={{flex:1,height:4,borderRadius:2,background:T.border,overflow:"hidden"}}>
                 <div style={{width:pastePct+"%",height:"100%",borderRadius:2,background:"rgba(99,102,241,0.7)",transition:"width 0.3s ease"}}/>
               </div>
-              <span style={{fontSize:10,color:"rgba(255,255,255,0.5)",whiteSpace:"nowrap"}}>{pasteLabel}</span>
+              <span style={{fontSize:10,color:T.text3,whiteSpace:"nowrap"}}>{pasteLabel}</span>
             </div>
           )}
 
           {!pasting && !pasteStatus.startsWith("✓") && (
-            <button onClick={handlePasteSubmit} disabled={!pasteContent.trim() || pasteFilename.trim().length < 3} style={{width:"100%",padding:"10px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,color:"#fff",background:"rgba(99,102,241,0.8)",opacity:(!pasteContent.trim()||pasteFilename.trim().length<3)?0.5:1}}>
+            <button onClick={handlePasteSubmit} disabled={!pasteContent.trim() || pasteFilename.trim().length < 3} style={{...btnStyle,opacity:(!pasteContent.trim()||pasteFilename.trim().length<3)?0.5:1}}>
               Ingest Text
             </button>
           )}
@@ -215,8 +204,8 @@ export function FileUploadModal({open,onClose,collectionId,collectionName,onUplo
           )}
         </div>
       )}
-
-      <style>{`@keyframes progressPulse{0%,100%{opacity:0.6}50%{opacity:1}}`}</style>
     </Modal>
   );
 }
+
+const btnStyle: React.CSSProperties = { width:"100%", padding:"10px", borderRadius:8, border:"none", cursor:"pointer", fontSize:13, fontWeight:500, color:"#fff", background:"rgba(99,102,241,0.8)", display:"flex", alignItems:"center", justifyContent:"center", gap:8 };
