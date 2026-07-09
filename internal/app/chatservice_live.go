@@ -23,17 +23,17 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// ─── Constants ───
+// â”€â”€â”€ Constants â”€â”€â”€
 const (
-	// ─── Context window safety limits ───
-	maxTotalChars  = 12000
+	// â”€â”€â”€ Context window safety limits â”€â”€â”€
+	maxTotalChars   = 12000
 	maxHistoryChars = 3000
 	maxContextChars = 4000
 
 	// Default context size if we can't detect RAM
 	defaultContextSize = 4096
 
-	// Max response tokens — generous enough for complete answers,
+	// Max response tokens â€” generous enough for complete answers,
 	// safe enough to prevent runaway generation / OOM
 )
 
@@ -97,7 +97,7 @@ func getLinuxRAMGB() int {
 			if len(parts) >= 2 {
 				// Value is in kB
 				if kb, err := strconv.Atoi(parts[1]); err == nil {
-					return kb / 1024 / 1024 // kB → GB
+					return kb / 1024 / 1024 // kB â†’ GB
 				}
 			}
 		}
@@ -124,7 +124,7 @@ func (s *ChatService) ServiceStartup(ctx context.Context, options application.Se
 	return nil
 }
 
-// ─── Greeting patterns for non-RAG responses ───
+// â”€â”€â”€ Greeting patterns for non-RAG responses â”€â”€â”€
 var greetingPatterns = []string{
 	"hi", "hello", "hey", "greetings", "howdy", "good morning", "good afternoon",
 	"good evening", "good night", "what's up", "sup", "yo", "how are you",
@@ -148,19 +148,19 @@ func isGreeting(text string) bool {
 }
 
 var greetingResponses = map[string]string{
-	"hi":             "Hi there! How can I help you today?",
-	"hello":          "Hello! Feel free to ask me anything or upload a document to get started.",
-	"hey":            "Hey! What can I do for you?",
-	"good morning":   "Good morning! Hope you're having a great day. How can I help?",
-	"good afternoon": "Good afternoon! What can I assist you with?",
-	"good evening":   "Good evening! How can I help you today?",
-	"how are you":    "I'm doing well, thank you for asking! How can I assist you?",
-	"thanks":         "You're welcome! Let me know if you need anything else.",
-	"thank you":      "You're welcome! Happy to help.",
-	"bye":            "Goodbye! Feel free to come back anytime.",
-	"goodbye":        "Goodbye! Take care.",
+	"hi":              "Hi there! How can I help you today?",
+	"hello":           "Hello! Feel free to ask me anything or upload a document to get started.",
+	"hey":             "Hey! What can I do for you?",
+	"good morning":    "Good morning! Hope you're having a great day. How can I help?",
+	"good afternoon":  "Good afternoon! What can I assist you with?",
+	"good evening":    "Good evening! How can I help you today?",
+	"how are you":     "I'm doing well, thank you for asking! How can I assist you?",
+	"thanks":          "You're welcome! Let me know if you need anything else.",
+	"thank you":       "You're welcome! Happy to help.",
+	"bye":             "Goodbye! Feel free to come back anytime.",
+	"goodbye":         "Goodbye! Take care.",
 	"what can you do": "I'm a local RAG (Retrieval-Augmented Generation) assistant. You can upload documents to my collections and then ask me questions about them. I'll search through the content to find relevant answers!",
-	"who are you":    "I'm your local RAG assistant, running entirely on your machine with no external API calls. I can answer questions based on documents you upload to the collections.",
+	"who are you":     "I'm your local RAG assistant, running entirely on your machine with no external API calls. I can answer questions based on documents you upload to the collections.",
 }
 
 func getGreetingResponse(text string) string {
@@ -178,9 +178,9 @@ func getGreetingResponse(text string) string {
 	return "Hello! How can I assist you today?"
 }
 
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  Collection management
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 func (s *ChatService) CreateCollection(name string) (int64, error) {
 	if s.DB == nil {
@@ -242,9 +242,9 @@ func (s *ChatService) GetCollections() ([]store.Collection, error) {
 	return cols, nil
 }
 
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  Chat session management
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 func (s *ChatService) CreateChat(title string, collectionID int64) (int64, error) {
 	if s.DB == nil {
@@ -313,9 +313,9 @@ func (s *ChatService) UnpinChat(sessionID int64) error {
 	return store.UnpinChatSession(s.DB, sessionID)
 }
 
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  Messaging
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt string) error {
 	if s.app == nil {
@@ -332,7 +332,7 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		}
 	}
 
-	// ── Check for greeting / small talk ──
+	// â”€â”€ Check for greeting / small talk â”€â”€
 	if isGreeting(prompt) {
 		response := getGreetingResponse(prompt)
 		go func() {
@@ -351,7 +351,7 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		return nil
 	}
 
-	// ── Engine check ──
+	// â”€â”€ Engine check â”€â”€
 	if s.Engine == nil {
 		s.emit("chat:thinking", map[string]any{"sessionId": sessionID})
 		s.emit("chat:token", map[string]any{
@@ -389,7 +389,7 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		}
 
 		if len(chunks) > 0 {
-			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "found", "label": fmt.Sprintf("Found %d relevant sections ✓", len(chunks))})
+			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "found", "label": fmt.Sprintf("Found %d relevant sections âœ“", len(chunks))})
 			time.Sleep(150 * time.Millisecond)
 			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "summarizing", "label": "Summarizing..."})
 		} else {
@@ -431,14 +431,14 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 							colName := s.getCollectionName(collectionID)
 							for _, sr := range sourceRefs {
 								filename := s.getChunkFilename(sr.chunk.ChunkID)
-								score := 1.0 / (1.0 + math.Abs(sr.chunk.Score))
+								score := normalizeMatchScore(sr.chunk.Score)
 								store.AddMessageSource(s.DB, msgID, sessionID, sr.chunk.ChunkID, filename, collectionID, colName, score, sr.chunk.Content, sr.refNum)
 							}
 							// Emit sources to frontend with filenames
 							sourceMap := make([]map[string]any, 0, len(sourceRefs))
 							for _, sr := range sourceRefs {
 								fn := s.getChunkFilename(sr.chunk.ChunkID)
-								score := 1.0 / (1.0 + math.Abs(sr.chunk.Score))
+								score := normalizeMatchScore(sr.chunk.Score)
 								sourceMap = append(sourceMap, map[string]any{
 									"refNumber":      sr.refNum,
 									"chunkId":        sr.chunk.ChunkID,
@@ -480,9 +480,9 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 	return nil
 }
 
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  File Upload & Parsing
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 type FileUploadResult struct {
 	Filename        string `json:"filename"`
@@ -509,10 +509,7 @@ func (s *ChatService) UploadFile(filename string, base64Data string, collectionI
 		return &FileUploadResult{Filename: filename, Status: "error", Message: "Failed to decode file data"}, nil
 	}
 
-	// 2. Compute hash
-	hash := fmt.Sprintf("%x", sha256.Sum256(data))
-
-	// 3. Extract text using parser
+	// 2. Extract text using parser
 	text, err := ingest.ParseFileBytes(data, filename)
 	if err != nil {
 		return &FileUploadResult{Filename: filename, Status: "error", Message: err.Error()}, nil
@@ -520,6 +517,9 @@ func (s *ChatService) UploadFile(filename string, base64Data string, collectionI
 	if strings.TrimSpace(text) == "" {
 		return &FileUploadResult{Filename: filename, Status: "error", Message: "No extractable text found in file"}, nil
 	}
+
+	// 3. Compute hash on extracted text content
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimSpace(text))))
 
 	// 4. Check for duplicate
 	existing, err := store.GetDocumentByHash(s.DB, hash, collectionID)
@@ -546,8 +546,21 @@ func (s *ChatService) UploadFile(filename string, base64Data string, collectionI
 		}
 		// Re-ingest with new content
 		words := len(strings.Fields(text))
+		s.emit("ingest:progress", map[string]any{
+			"step": "chunking", "label": "Chunking text...", "pct": 0, "detail": "",
+		})
 		chunks := ingest.SplitText(text, 500, 100)
+		total := len(chunks)
+		s.emit("ingest:progress", map[string]any{
+			"step": "chunked", "label": fmt.Sprintf("Chunked into %d parts ✓", total),
+			"pct": 5, "detail": fmt.Sprintf("%d chunks", total),
+		})
 		for i, chunk := range chunks {
+			pct := 5 + ((i * 90) / total)
+			s.emit("ingest:progress", map[string]any{
+				"step": "embedding", "label": fmt.Sprintf("Embedding chunk %d/%d...", i+1, total),
+				"pct": pct, "detail": fmt.Sprintf("%d/%d", i+1, total),
+			})
 			embedding, err := s.Engine.Embed(chunk.Content)
 			if err != nil {
 				return &FileUploadResult{Filename: filename, Status: "error", Message: fmt.Sprintf("Embedding error: %v", err)}, nil
@@ -555,23 +568,33 @@ func (s *ChatService) UploadFile(filename string, base64Data string, collectionI
 			if _, err := store.InsertChunk(s.DB, existing.ID, collectionID, chunk.Content, chunk.Ord, embedding); err != nil {
 				return &FileUploadResult{Filename: filename, Status: "error", Message: fmt.Sprintf("Insert error: %v", err)}, nil
 			}
-			_ = i
 		}
+		s.emit("ingest:progress", map[string]any{
+			"step": "complete", "label": fmt.Sprintf("Complete! %d chunks ingested.", total),
+			"pct": 100, "detail": "",
+		})
 		colName := s.getCollectionName(collectionID)
 		return &FileUploadResult{
 			Filename: filename, Status: "replaced", Message: "File replaced and re-ingested successfully",
-			DocID: existing.ID, CollectionName: colName, WordCount: words, ChunkCount: len(chunks),
+			DocID: existing.ID, CollectionName: colName, WordCount: words, ChunkCount: total,
 		}, nil
 	}
 
 	// 5. New file: emit progress, ingest
 	colName := s.getCollectionName(collectionID)
 	words := len(strings.Fields(text))
+	s.emit("ingest:progress", map[string]any{
+		"step": "chunking", "label": "Chunking text...", "pct": 0, "detail": "",
+	})
 	chunks := ingest.SplitText(text, 500, 100)
 	total := len(chunks)
 	if total == 0 {
 		return &FileUploadResult{Filename: filename, Status: "error", Message: "No content to ingest"}, nil
 	}
+	s.emit("ingest:progress", map[string]any{
+		"step": "chunked", "label": fmt.Sprintf("Chunked into %d parts ✓", total),
+		"pct": 5, "detail": fmt.Sprintf("%d chunks", total),
+	})
 
 	// Register document with hash and content
 	docID, err := store.AddDocument(s.DB, collectionID, filename, hash, text)
@@ -581,6 +604,11 @@ func (s *ChatService) UploadFile(filename string, base64Data string, collectionI
 
 	embedErr := false
 	for i, chunk := range chunks {
+		pct := 5 + ((i * 90) / total)
+		s.emit("ingest:progress", map[string]any{
+			"step": "embedding", "label": fmt.Sprintf("Embedding chunk %d/%d...", i+1, total),
+			"pct": pct, "detail": fmt.Sprintf("%d/%d", i+1, total),
+		})
 		embedding, err := s.Engine.Embed(chunk.Content)
 		if err != nil {
 			embedErr = true
@@ -590,7 +618,6 @@ func (s *ChatService) UploadFile(filename string, base64Data string, collectionI
 			embedErr = true
 			break
 		}
-		_ = i
 	}
 
 	// If embedding failed, clean up the document record so it doesn't appear as a broken entry
@@ -598,6 +625,11 @@ func (s *ChatService) UploadFile(filename string, base64Data string, collectionI
 		store.DeleteDocument(s.DB, docID)
 		return &FileUploadResult{Filename: filename, Status: "error", Message: "Embedding failed partway through. Document cleaned up. Try again."}, nil
 	}
+
+	s.emit("ingest:progress", map[string]any{
+		"step": "complete", "label": fmt.Sprintf("Complete! %d chunks ingested.", total),
+		"pct": 100, "detail": "",
+	})
 
 	return &FileUploadResult{
 		Filename: filename, Status: "success", Message: fmt.Sprintf("File ingested: %d chunks", total),
@@ -635,7 +667,7 @@ func (s *ChatService) CheckFileHash(hash string, collectionID int64) (*FileUploa
 	createdTime := time.Unix(existing.CreatedAt, 0).Format("Jan 2, 2006 at 15:04")
 	return &FileUploadResult{
 		Filename: existing.Filename, Status: "duplicate",
-		Message: fmt.Sprintf("Already uploaded %s", createdTime),
+		Message:       fmt.Sprintf("Already uploaded %s", createdTime),
 		ExistingDocID: existing.ID, ExistingCreated: existing.CreatedAt,
 	}, nil
 }
@@ -672,7 +704,7 @@ func (s *ChatService) IngestFile(collectionID int64, filename string, fileConten
 	}
 
 	s.emit("ingest:progress", map[string]any{
-		"step": "chunked", "label": fmt.Sprintf("Chunked into %d parts ✓", total),
+		"step": "chunked", "label": fmt.Sprintf("Chunked into %d parts âœ“", total),
 		"pct": 5, "detail": fmt.Sprintf("%d chunks", total),
 	})
 
@@ -705,9 +737,9 @@ func (s *ChatService) IngestFile(collectionID int64, filename string, fileConten
 	return nil
 }
 
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  Universal Search
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 type SearchResult struct {
 	Content        string  `json:"content"`
@@ -797,18 +829,18 @@ func (s *ChatService) searchCollection(query string, queryEmb []float32, collect
 	colName := s.getCollectionName(collectionID)
 	const k = 60
 	type scored struct {
-		sr    SearchResult
-		rrf   float64
+		sr  SearchResult
+		rrf float64
 	}
 	merged := make(map[int64]*scored)
 
 	for rank, r := range kwResults {
 		fn := s.getChunkFilename(r.ChunkID)
-		ns := 1.0 / (1.0 + math.Abs(r.Score))
+		ns := normalizeBM25Score(r.Score)
 		merged[r.ChunkID] = &scored{
 			sr: SearchResult{
 				Content: r.Content, Score: ns, SearchType: "keyword",
-				CollectionID: collectionID,
+				CollectionID:   collectionID,
 				CollectionName: colName, Filename: fn, ChunkID: r.ChunkID,
 			},
 			rrf: 1.0 / float64(k+rank+1),
@@ -816,15 +848,18 @@ func (s *ChatService) searchCollection(query string, queryEmb []float32, collect
 	}
 	for rank, r := range vecResults {
 		fn := s.getChunkFilename(r.ChunkID)
-		vecNorm := 1.0 / (1.0 + math.Abs(r.Score))
+		vecNorm := normalizeDistanceScore(r.Score)
 		if existing, ok := merged[r.ChunkID]; ok {
 			existing.rrf += 1.0 / float64(k+rank+1)
 			existing.sr.SearchType = "hybrid"
+			if vecNorm > existing.sr.Score {
+				existing.sr.Score = vecNorm
+			}
 		} else {
 			merged[r.ChunkID] = &scored{
 				sr: SearchResult{
 					Content: r.Content, Score: vecNorm, SearchType: "vector",
-					CollectionID: collectionID,
+					CollectionID:   collectionID,
 					CollectionName: colName, Filename: fn, ChunkID: r.ChunkID,
 				},
 				rrf: 1.0 / float64(k+rank+1),
@@ -843,6 +878,34 @@ func (s *ChatService) searchCollection(query string, queryEmb []float32, collect
 	return out, nil
 }
 
+func normalizeDistanceScore(score float64) float64 {
+	if score < 0 {
+		score = math.Abs(score)
+	}
+	if score <= 0 {
+		return 1
+	}
+	return math.Max(0, math.Min(1, 1.0/(1.0+score)))
+}
+
+func normalizeBM25Score(score float64) float64 {
+	if score >= 0 {
+		return 0
+	}
+	abs := math.Abs(score)
+	return abs / (1.0 + abs)
+}
+
+func normalizeMatchScore(score float64) float64 {
+	if score < 0 {
+		score = math.Abs(score)
+	}
+	const bestSingleRankRRF = 1.0 / 61.0
+	if score <= 0 {
+		return 0
+	}
+	return math.Max(0, math.Min(1, score/bestSingleRankRRF))
+}
 func (s *ChatService) getChunkFilename(chunkID int64) string {
 	if s.DB == nil {
 		return "unknown"
@@ -896,9 +959,9 @@ func (s *ChatService) GetSessionSources(sessionID int64) ([]store.SourceChunkRef
 	return result, nil
 }
 
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  Helpers
-// ════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 func (s *ChatService) emit(name string, data ...any) {
 	if s.app != nil {

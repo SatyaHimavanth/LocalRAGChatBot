@@ -1,4 +1,4 @@
-import { SearchResult, ThemeVars } from "../types";
+﻿import { SearchResult, ThemeVars } from "../types";
 import { I } from "./Icons";
 
 interface SearchPanelProps {
@@ -39,7 +39,7 @@ export function SearchPanel(props:SearchPanelProps){
             <div style={{display:"flex",gap:8,alignItems:"center",fontSize:11,color:T.text3,marginBottom:4,flexWrap:"wrap"}}>
               <span>{r.filename}</span>
               <span style={{padding:"1px 6px",borderRadius:4,background:r.searchType==="vector"?"rgba(99,102,241,0.15)":r.searchType==="hybrid"?"rgba(34,197,94,0.15)":"rgba(128,128,128,0.1)",fontSize:10,textTransform:"uppercase",color:r.searchType==="vector"?"rgba(99,102,241,0.8)":r.searchType==="hybrid"?"rgba(34,197,94,0.8)":"rgba(128,128,128,0.6)"}}>{r.searchType}</span>
-              <span><strong>{props.displayScore(r.score)}%</strong></span>
+              <span><strong>{props.displayScore(r.score)}%</strong> match</span>
               <span>in "{r.collectionName}"</span>
             </div>
             <div style={{fontSize:13,lineHeight:1.5,color:T.text}}>{r.content}</div>
@@ -49,3 +49,4 @@ export function SearchPanel(props:SearchPanelProps){
     </div>
   );
 }
+

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+﻿import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Events } from "@wailsio/runtime";
 import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, UploadFile, GetDocumentContent, GetSessionSources } from "../bindings/changeme/internal/app/chatservice";
 import { Message, Chat, Collection, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg } from "./types";
@@ -69,7 +69,7 @@ export default function App() {
     const offT=Events.On("chat:token",(e:any)=>{setStatusMsgs([]);const sid=e.data.sessionId;setChats(p=>p.map(c=>{if(c.id!==sid)return c;const ms=[...c.messages];const last=ms[ms.length-1];if(last&&last.sender==="ai"){ms[ms.length-1]={...last,text:last.text+e.data.token}}else{ms.push({id:crypto.randomUUID(),sender:"ai",text:e.data.token})}return{...c,messages:ms}}))});
     const offD=Events.On("chat:done",(e:any)=>{
       setGen(false);setStatusMsgs([]);
-      // chat:done now carries msgId from backend — update the last AI message's id to match
+      // chat:done now carries msgId from backend â€” update the last AI message's id to match
       if (e?.data?.msgId) {
         const sid = e.data.sessionId;
         const backendMsgId = e.data.msgId;
@@ -143,7 +143,7 @@ export default function App() {
     try{await SendMessage(tid,activeColId,msg)}catch(e){console.error(e);setGen(false);setStatusMsgs([])}
   };
 
-  // File upload via modal — does NOT update App state during processing.
+  // File upload via modal â€” does NOT update App state during processing.
   // Only returns result strings. Collections refresh on modal close.
   const processFile = useCallback(async (file: File, replace: boolean): Promise<string> => {
     try {
@@ -153,13 +153,14 @@ export default function App() {
         reader.onerror = reject; reader.readAsDataURL(file);
       });
       const r: any = await UploadFile(file.name, dataUrl, activeColId, replace);
-      if (r.Status === "duplicate" && !replace) {
+      const status = r?.status ?? r?.Status;
+      const message = r?.message ?? r?.Message;
+      if (status === "duplicate" && !replace) {
         return "duplicate";
-      } else if (r.Status === "success" || r.Status === "replaced") {
-        return r.Status;
+      } else if (status === "success" || status === "replaced") {
+        return status;
       } else {
-        const msg = r.Message || `Failed to process "${file.name}"`;
-        return msg;
+        return message || `Failed to process "${file.name}"`;
       }
     } catch (e: any) {
       return getErrMsg(e);
@@ -198,7 +199,7 @@ export default function App() {
 
   const doSearch = async () => { if (!sq.trim()) return; setSBusy(true); setSDone(true); try { const r: any = await Search(sq, 0); setSResults(r || []); } catch (e) { console.error(e); setSResults([]); } setSBusy(false); };
   const clearSearch = () => { setSq(""); setSResults([]); setSDone(false); setSearchFilter("all"); };
-  const displayScore = (score: number) => Math.min(score * 100, 99.9).toFixed(1);
+  const displayScore = (score: number) => Math.max(0, Math.min(score * 100, 100)).toFixed(1);
   const filteredResults = sDone ? sResults.filter(r => { if (searchFilter === "all") return true; if (searchFilter === "keyword") return r.searchType === "keyword"; if (searchFilter === "vector") return r.searchType === "vector"; if (searchFilter === "hybrid") return r.searchType === "hybrid"; return true; }) : [];
 
   const filteredCols = cols.filter(c => c.name.toLowerCase().includes(colSearch.toLowerCase()));
@@ -279,3 +280,4 @@ function ctxMenuItem(label: string, icon: React.ReactNode, onClick: () => void, 
     </div>
   );
 }
+
