@@ -44,7 +44,7 @@ export function CollectionsPanel(props:CollectionsPanelProps){
   };
 
   return(
-    <div style={{flex:1,display:"flex",flexDirection:"column",padding:20,overflow:"auto",minWidth:0}}>
+    <div style={{flex:1,display:"flex",flexDirection:"column",padding:20,overflow:"auto",minWidth:0,minHeight:0}}>
       <h2 style={{fontSize:18,fontWeight:600,marginBottom:16,flexShrink:0}}>Knowledge Collections</h2>
       <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",flexShrink:0}}>
         {props.cols.map(c=>(
@@ -63,7 +63,7 @@ export function CollectionsPanel(props:CollectionsPanelProps){
       </div>
 
       {/* Document table + content preview */}
-      <div style={{flex:1,display:"flex",gap:16,overflow:"hidden",flexWrap:"wrap",alignContent:"flex-start"}}>
+      <div style={{flex:1,display:"flex",gap:16,overflow:"visible",flexWrap:"wrap",alignContent:"flex-start",minHeight:0}}>
         {/* Left: Sortable document table */}
         <div style={{flex:"1 1 350px",minWidth:260,display:"flex",flexDirection:"column",overflow:"hidden"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexShrink:0}}>

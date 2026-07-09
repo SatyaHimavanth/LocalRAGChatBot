@@ -186,8 +186,11 @@ export function FileUploadModal({open,onClose,collectionId,collectionName,onUplo
 
       {mode === "paste" && onIngestPaste && (
         <div style={{display:"flex",flexDirection:"column",gap:8}}>
-          <input value={pasteFilename} onChange={e=>setPasteFilename(e.target.value)} placeholder="Filename (min 3 chars)" style={{width:"100%",padding:"10px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",color:"#fff",fontSize:13,outline:"none"}} disabled={pasting}/>
-          <textarea value={pasteContent} onChange={e=>setPasteContent(e.target.value)} placeholder="Paste document content..." style={{width:"100%",minHeight:100,padding:"10px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",color:"#fff",fontSize:12,outline:"none",resize:"vertical",fontFamily:"monospace"}} disabled={pasting}/>
+          <input value={pasteFilename} onChange={e=>{if (pasteStatus.startsWith("✓")) setPasteStatus(""); setPasteFilename(e.target.value);}} placeholder="Filename (min 3 chars)" style={{width:"100%",padding:"10px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",color:"#fff",fontSize:13,outline:"none",opacity:pasting?0.5:1}} disabled={pasting}/>
+          {pasteFilename.trim().length > 0 && pasteFilename.trim().length < 3 && !pasting && (
+            <div style={{fontSize:10,color:"rgba(239,68,68,0.7)",marginTop:-6}}>Filename must be at least 3 characters</div>
+          )}
+          <textarea value={pasteContent} onChange={e=>{if (pasteStatus.startsWith("✓")) setPasteStatus(""); setPasteContent(e.target.value);}} placeholder="Paste document content..." style={{width:"100%",minHeight:100,padding:"10px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",color:"#fff",fontSize:12,outline:"none",resize:"vertical",fontFamily:"monospace"}} disabled={pasting}/>
 
           {/* Paste progress bar — uses actual pct from events */}
           {pasting && pasteLabel && (
@@ -200,7 +203,7 @@ export function FileUploadModal({open,onClose,collectionId,collectionName,onUplo
           )}
 
           {!pasting && !pasteStatus.startsWith("✓") && (
-            <button onClick={handlePasteSubmit} disabled={!pasteContent.trim()} style={{width:"100%",padding:"10px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,color:"#fff",background:"rgba(99,102,241,0.8)",opacity:!pasteContent.trim()?0.5:1}}>
+            <button onClick={handlePasteSubmit} disabled={!pasteContent.trim() || pasteFilename.trim().length < 3} style={{width:"100%",padding:"10px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,color:"#fff",background:"rgba(99,102,241,0.8)",opacity:(!pasteContent.trim()||pasteFilename.trim().length<3)?0.5:1}}>
               Ingest Text
             </button>
           )}

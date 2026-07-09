@@ -362,18 +362,21 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		return nil
 	}
 
-	// Run the entire process in a background goroutine so we can
-	// interleave status messages with the actual work being done.
+	// Run the entire process in a background goroutine
 	go func() {
-		// Step 1: Thinking
 		s.emit("chat:thinking", map[string]any{"sessionId": sessionID})
 		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "thinking", "label": "Thinking..."})
 		time.Sleep(200 * time.Millisecond)
 
-		// Step 2: Searching
+		// Load conversation history
+		var history []llama.ChatMessage
+		if s.DB != nil {
+			history = s.loadConversationHistory(sessionID)
+		}
+
+		// Search knowledge base
 		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "searching", "label": "Searching documents..."})
 
-		// Perform embedding + search
 		var chunks []store.ScoredChunk
 		if s.DB != nil {
 			queryEmb, err := s.Engine.Embed(prompt)
@@ -385,7 +388,6 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 			}
 		}
 
-		// Step 3: Report findings
 		if len(chunks) > 0 {
 			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "found", "label": fmt.Sprintf("Found %d relevant sections ✓", len(chunks))})
 			time.Sleep(150 * time.Millisecond)
@@ -395,24 +397,17 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		}
 		time.Sleep(100 * time.Millisecond)
 
-		// Signal that thinking/status phase is done, about to stream
 		s.emit("chat:thinking:done", map[string]any{"sessionId": sessionID})
 
-		// Load recent conversation history for context window
-		var history []llama.ChatMessage
-		if s.DB != nil {
-			history = s.loadConversationHistory(sessionID)
-		}
-
-		// Compute optimal context window size based on available RAM
+		// Get optimal context size
 		ctxSize := getOptimalContextSize()
 
-		// Build messages with history and context (uses scaled budgets)
+		// Build messages with both context AND conversation history
 		messages := buildMessagesWithBudget(chunks, prompt, history, ctxSize)
 
 		chatCtx, err := s.Engine.ChatModel.NewContext(llama.WithContext(ctxSize))
 		if err != nil {
-			s.emit("chat:token", map[string]any{"sessionId": sessionID, "token": fmt.Sprintf("\n[Error creating context: %v]\n", err)})
+			s.emit("chat:token", map[string]any{"sessionId": sessionID, "token": fmt.Sprintf("\n[Error: %v]\n", err)})
 			s.emit("chat:done", sessionID)
 			return
 		}
@@ -930,9 +925,12 @@ func buildMessagesWithBudget(chunks []store.ScoredChunk, prompt string, history 
 		contextBuilder.WriteByte('\n')
 	}
 
-	systemPrompt := "You are a local RAG assistant. Answer from the provided context when it is relevant, and say when the context is not enough."
+	systemPrompt := "You are a helpful AI assistant."
 	if contextBuilder.Len() > 0 {
-		systemPrompt += "\n\nContext:\n" + contextBuilder.String()
+		systemPrompt += " Use the Document Context below to answer questions. If the context doesn't contain relevant information, answer from your general knowledge."
+		systemPrompt += "\n\nDocument Context:\n" + contextBuilder.String()
+	} else {
+		systemPrompt += " You have the conversation history below. Answer from your general knowledge. If the user asks about specific documents they uploaded, let them know no documents are available."
 	}
 
 	messages := []llama.ChatMessage{
