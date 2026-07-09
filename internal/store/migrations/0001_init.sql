@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 	session_id INTEGER NOT NULL REFERENCES chat_sessions(id),
 	role TEXT NOT NULL,
 	content TEXT NOT NULL,
-	created_at INTEGER NOT NULL
+	created_at INTEGER NOT NULL,
+	cancelled INTEGER NOT NULL DEFAULT 0
 );
 
 -- Stores source chunks referenced in AI responses

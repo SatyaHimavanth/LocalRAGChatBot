@@ -1,4 +1,4 @@
-package app
+﻿package app
 
 import (
 	"bufio"
@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"changeme/internal/engine"
@@ -117,10 +118,15 @@ type ChatService struct {
 	Engine *engine.Engine
 	DB     *sql.DB
 	app    *application.App
+
+	// cancelFuncs tracks active streaming sessions for cancellation
+	cancelFuncs map[int64]context.CancelFunc
+	cancelMu    sync.Mutex
 }
 
 func (s *ChatService) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	s.app = application.Get()
+	s.cancelFuncs = make(map[int64]context.CancelFunc)
 	return nil
 }
 
@@ -314,6 +320,34 @@ func (s *ChatService) UnpinChat(sessionID int64) error {
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// CancelGeneration cancels an in-progress streaming generation for a session.
+func (s *ChatService) CancelGeneration(sessionID int64) error {
+	s.cancelMu.Lock()
+	defer s.cancelMu.Unlock()
+	if cancel, ok := s.cancelFuncs[sessionID]; ok {
+		cancel()
+		// Don't delete from cancelFuncs or emit here — let the goroutine's
+		// deferred cleanup and persistCancelledMessage handle persistence + emit.
+	}
+	return nil
+}
+
+// persistCancelledMessage saves a cancelled AI message to DB and emits chat:done.
+func (s *ChatService) persistCancelledMessage(sessionID int64) {
+	// Only persist if DB is available and no msg was stored yet (to avoid duplicating partial content)
+	s.cancelMu.Lock()
+	defer s.cancelMu.Unlock()
+	if _, exists := s.cancelFuncs[sessionID]; exists {
+		// Still registered = no msg saved yet by the stream loop
+		if s.DB != nil {
+			store.AddCancelledChatMessage(s.DB, sessionID, "assistant", ".")
+		}
+		delete(s.cancelFuncs, sessionID)
+	}
+	s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": int64(-1), "cancelled": true})
+}
+
+
 //  Messaging
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -364,9 +398,52 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 
 	// Run the entire process in a background goroutine
 	go func() {
+		// Create a cancelable context so the user can stop generation
+		ctx, cancel := context.WithCancel(context.Background())
+		s.cancelMu.Lock()
+		s.cancelFuncs[sessionID] = cancel
+		s.cancelMu.Unlock()
+		var msgID int64
+		var genComplete bool
+		defer func() {
+			cancel()
+			// genComplete is set to true when the stream loop finishes normally
+			if genComplete {
+				// Normal completion — final emit is done here, not in stream loop
+				if msgID > 0 {
+					s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": msgID})
+				} else {
+					s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": int64(0)})
+				}
+				return
+			}
+			// Not normal completion — check if cancelled
+			s.cancelMu.Lock()
+			if _, exists := s.cancelFuncs[sessionID]; exists {
+				delete(s.cancelFuncs, sessionID)
+				if msgID > 0 && s.DB != nil {
+					store.MarkMessageCancelled(s.DB, msgID)
+					s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": msgID, "cancelled": true})
+				} else if s.DB != nil {
+					store.AddCancelledChatMessage(s.DB, sessionID, "assistant", ".")
+					s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": int64(-1), "cancelled": true})
+				}
+			}
+			s.cancelMu.Unlock()
+		}()
 		s.emit("chat:thinking", map[string]any{"sessionId": sessionID})
 		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "thinking", "label": "Thinking..."})
+
+		// Check if cancelled during initial thinking phase
+		if ctx.Err() != nil {
+			s.persistCancelledMessage(sessionID)
+			return
+		}
 		time.Sleep(200 * time.Millisecond)
+		if ctx.Err() != nil {
+			s.persistCancelledMessage(sessionID)
+			return
+		}
 
 		// Load conversation history
 		var history []llama.ChatMessage
@@ -387,15 +464,27 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 				}
 			}
 		}
+		if ctx.Err() != nil {
+			s.persistCancelledMessage(sessionID)
+			return
+		}
 
 		if len(chunks) > 0 {
-			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "found", "label": fmt.Sprintf("Found %d relevant sections âœ“", len(chunks))})
+			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "found", "label": fmt.Sprintf("Found %d relevant sections ✓", len(chunks))})
 			time.Sleep(150 * time.Millisecond)
+			if ctx.Err() != nil {
+				s.persistCancelledMessage(sessionID)
+				return
+			}
 			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "summarizing", "label": "Summarizing..."})
 		} else {
 			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "thinking", "label": "Thinking..."})
 		}
 		time.Sleep(100 * time.Millisecond)
+		if ctx.Err() != nil {
+			s.persistCancelledMessage(sessionID)
+			return
+		}
 
 		s.emit("chat:thinking:done", map[string]any{"sessionId": sessionID})
 
@@ -413,12 +502,11 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		}
 		defer chatCtx.Close()
 
-		deltas, errs := chatCtx.ChatStream(context.Background(), messages, llama.ChatOptions{
+		deltas, errs := chatCtx.ChatStream(ctx, messages, llama.ChatOptions{
 			MaxTokens: &maxResponseTokens,
 		})
 
 		var fullResponse strings.Builder
-		var msgID int64
 		for {
 			select {
 			case delta, ok := <-deltas:
@@ -455,7 +543,7 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 								"sources":   sourceMap,
 							})
 						}
-						s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": msgID})
+						genComplete = true
 					}
 					return
 				}
@@ -704,7 +792,7 @@ func (s *ChatService) IngestFile(collectionID int64, filename string, fileConten
 	}
 
 	s.emit("ingest:progress", map[string]any{
-		"step": "chunked", "label": fmt.Sprintf("Chunked into %d parts âœ“", total),
+		"step": "chunked", "label": fmt.Sprintf("Chunked into %d parts ✓", total),
 		"pct": 5, "detail": fmt.Sprintf("%d chunks", total),
 	})
 

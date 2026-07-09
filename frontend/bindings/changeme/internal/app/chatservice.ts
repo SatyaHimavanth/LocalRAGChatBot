@@ -18,6 +18,14 @@ export function ArchiveChat(sessionID: number): $CancellablePromise<void> {
 }
 
 /**
+ * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+ * CancelGeneration cancels an in-progress streaming generation for a session.
+ */
+export function CancelGeneration(sessionID: number): $CancellablePromise<void> {
+    return $Call.ByID(4129843748, sessionID);
+}
+
+/**
  * CheckFileHash checks if a file hash already exists in a collection.
  */
 export function CheckFileHash(hash: string, collectionID: number): $CancellablePromise<$models.FileUploadResult | null> {

@@ -11,9 +11,10 @@ interface ChatPanelProps {
   onInputChange: (v: string) => void; onSend: () => void;
   onThemeToggle: () => void;
   onOpenUploadModal: () => void;
+  onStopGeneration?: () => void;
 }
 
-export function ChatPanel({activeChat,isArchived,input,gen,statusMsgs,T,theme,collSelector,onInputChange,onSend,onThemeToggle,onOpenUploadModal}:ChatPanelProps){
+export function ChatPanel({activeChat,isArchived,input,gen,statusMsgs,T,theme,collSelector,onInputChange,onSend,onThemeToggle,onOpenUploadModal,onStopGeneration}:ChatPanelProps){
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastUserMsgRef = useRef<HTMLDivElement>(null);
   const prevMsgCount = useRef(activeChat?.messages.length || 0);
@@ -83,9 +84,14 @@ export function ChatPanel({activeChat,isArchived,input,gen,statusMsgs,T,theme,co
             <div style={{maxWidth:"80%",padding:"10px 14px",borderRadius:12,background:m.sender==="user"?T.bubbleUser:T.bubbleAI,fontSize:13,lineHeight:1.5,wordBreak:"break-word",overflow:"hidden"}}>
               <Markdown text={processed} hasPreformattedHtml={hasSources}/>
             </div>
-            {m.sender==="ai" && !gen && !hasSources && idx === activeChat.messages.length - 1 && (
+            {m.sender==="ai" && !gen && !hasSources && idx === activeChat.messages.length - 1 && !m.cancelled && (
               <div style={{marginTop:6,fontSize:10,color:T.text3,fontStyle:"italic"}}>
                 ⚡ Answered from general knowledge
+              </div>
+            )}
+            {m.sender==="ai" && m.cancelled && (
+              <div style={{marginTop:6,fontSize:10,color:"rgba(239,68,68,0.7)",fontStyle:"italic"}}>
+                ⏹ Response cancelled
               </div>
             )}
           </div>
@@ -151,6 +157,11 @@ export function ChatPanel({activeChat,isArchived,input,gen,statusMsgs,T,theme,co
           <button onClick={onOpenUploadModal} style={{background:"none",border:"none",cursor:"pointer",color:T.text3,padding:"6px",display:"flex",flexShrink:0}} title="Upload documents"><I.Paperclip/></button>
           <input value={input} onChange={e=>onInputChange(e.target.value)} onKeyDown={e=>e.key==="Enter"&&!e.shiftKey&&onSend()} placeholder={isArchived?"Archived...":"Ask a question..."} style={{flex:1,padding:"10px 14px",borderRadius:8,border:"1px solid "+T.border,background:T.inputBg,color:T.text,fontSize:13,outline:"none",opacity:isArchived?0.4:1,transition:"background 0.3s"}} disabled={isArchived}/>
           <button onClick={onSend} disabled={gen||isArchived} style={{padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,color:"#fff",background:"rgba(99,102,241,0.8)",opacity:(gen||isArchived)?0.5:1,display:"flex",alignItems:"center",justifyContent:"center",minWidth:36}}>{gen?<I.Spinner/>:<I.Send/>}</button>
+          {gen && onStopGeneration && (
+            <button onClick={onStopGeneration} style={{padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,color:"#fff",background:"rgba(239,68,68,0.8)",display:"flex",alignItems:"center",justifyContent:"center",gap:4,minWidth:36}} title="Stop generation">
+              ■
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -20,6 +20,7 @@ type ChatMessage struct {
 	Role      string `json:"role"`
 	Content   string `json:"content"`
 	CreatedAt int64  `json:"createdAt"`
+	Cancelled bool   `json:"cancelled"`
 }
 
 func CreateChatSession(db *sql.DB, title string, collectionID int64) (int64, error) {
@@ -84,7 +85,7 @@ func DeleteChatSession(db *sql.DB, id int64) error {
 }
 
 func AddChatMessage(db *sql.DB, sessionID int64, role string, content string) (int64, error) {
-	res, err := db.Exec("INSERT INTO chat_messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+	res, err := db.Exec("INSERT INTO chat_messages (session_id, role, content, created_at, cancelled) VALUES (?, ?, ?, ?, 0)",
 		sessionID, role, content, time.Now().Unix())
 	if err != nil {
 		return 0, err
@@ -92,8 +93,22 @@ func AddChatMessage(db *sql.DB, sessionID int64, role string, content string) (i
 	return res.LastInsertId()
 }
 
+func AddCancelledChatMessage(db *sql.DB, sessionID int64, role string, content string) (int64, error) {
+	res, err := db.Exec("INSERT INTO chat_messages (session_id, role, content, created_at, cancelled) VALUES (?, ?, ?, ?, 1)",
+		sessionID, role, content, time.Now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func MarkMessageCancelled(db *sql.DB, msgID int64) error {
+	_, err := db.Exec("UPDATE chat_messages SET cancelled = 1 WHERE id = ?", msgID)
+	return err
+}
+
 func GetChatMessages(db *sql.DB, sessionID int64) ([]ChatMessage, error) {
-	rows, err := db.Query("SELECT id, session_id, role, content, created_at FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC", sessionID)
+	rows, err := db.Query("SELECT id, session_id, role, content, created_at, COALESCE(cancelled,0) FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC", sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -102,9 +117,11 @@ func GetChatMessages(db *sql.DB, sessionID int64) ([]ChatMessage, error) {
 	var messages []ChatMessage
 	for rows.Next() {
 		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+		var cancelledInt int64
+		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.CreatedAt, &cancelledInt); err != nil {
 			return nil, err
 		}
+		m.Cancelled = cancelledInt != 0
 		messages = append(messages, m)
 	}
 	return messages, rows.Err()

@@ -1,6 +1,6 @@
 ﻿import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Events } from "@wailsio/runtime";
-import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, UploadFile, GetDocumentContent, GetSessionSources } from "../bindings/changeme/internal/app/chatservice";
+import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, UploadFile, GetDocumentContent, GetSessionSources, CancelGeneration } from "../bindings/changeme/internal/app/chatservice";
 import { Message, Chat, Collection, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg } from "./types";
 import { I } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
@@ -41,12 +41,14 @@ export default function App() {
   const [cols,setCols]=useState<Collection[]>([]);
   const [activeColId,setActiveColId]=useState(1);
   const [newColName,setNewColName]=useState("");
-  const [isIngesting]=useState(false);
+  const [isIngesting, setIsIngesting] = useState(false);
+  const processingRef = useRef(0);
   const [idocs,setIdocs]=useState<DocRecord[]>([]);
   const [selectedDocId,setSelectedDocId]=useState<number|null>(null);
   const [selectedDocContent,setSelectedDocContent]=useState("");
 
   const [showUploadModal,setShowUploadModal]=useState(false);
+  const closeUploadModal = () => { setShowUploadModal(false); loadCols(); loadDocs(activeColId); };
 
   const [toasts,setToasts]=useState<ToastMsg[]>([]);
   const addToast=useCallback((type:"success"|"error"|"info",message:string)=>{const id=crypto.randomUUID();setToasts(p=>[...p,{id,type,message}]);setTimeout(()=>setToasts(p=>p.filter(t=>t.id!==id)),5000)},[]);
@@ -67,16 +69,42 @@ export default function App() {
 
   useEffect(()=>{
     const offT=Events.On("chat:token",(e:any)=>{setStatusMsgs([]);const sid=e.data.sessionId;setChats(p=>p.map(c=>{if(c.id!==sid)return c;const ms=[...c.messages];const last=ms[ms.length-1];if(last&&last.sender==="ai"){ms[ms.length-1]={...last,text:last.text+e.data.token}}else{ms.push({id:crypto.randomUUID(),sender:"ai",text:e.data.token})}return{...c,messages:ms}}))});
-    const offD=Events.On("chat:done",(e:any)=>{
+        const offD=Events.On("chat:done",(e:any)=>{
       setGen(false);setStatusMsgs([]);
-      // chat:done now carries msgId from backend â€” update the last AI message's id to match
-      if (e?.data?.msgId) {
-        const sid = e.data.sessionId;
-        const backendMsgId = e.data.msgId;
+      const sid = e?.data?.sessionId;
+      const backendMsgId = e?.data?.msgId;
+      const wasCancelled = e?.data?.cancelled === true;
+      if (!sid) return;
+      // Cancelled with msgId == -1 means no message was saved yet — add a placeholder
+      if (wasCancelled && backendMsgId === -1) {
         setChats(p=>p.map(c=>{
           if(c.id!==sid)return c;
           const ms = [...c.messages];
-          // Find the last AI message (which had a UUID id) and replace its id with the backend msgId
+          ms.push({ id: crypto.randomUUID(), sender: "ai" as const, text: ".", cancelled: true });
+          return { ...c, messages: ms };
+        }));
+        return;
+      }
+      // Cancelled mid-stream — mark the existing message (identified by msgId) as cancelled
+      if (wasCancelled && backendMsgId > 0) {
+        setChats(p=>p.map(c=>{
+          if(c.id!==sid)return c;
+          const ms = [...c.messages];
+          for(let i=ms.length-1;i>=0;i--){
+            if(ms[i].sender==="ai"){
+              ms[i] = { ...ms[i], cancelled: true, id: backendMsgId.toString() };
+              break;
+            }
+          }
+          return { ...c, messages: ms };
+        }));
+        return;
+      }
+      // Normal completion — update the last AI message's id
+      if (backendMsgId && sid) {
+        setChats(p=>p.map(c=>{
+          if(c.id!==sid)return c;
+          const ms = [...c.messages];
           for(let i=ms.length-1;i>=0;i--){
             if(ms[i].sender==="ai"){
               ms[i] = {...ms[i], id: backendMsgId.toString()};
@@ -86,8 +114,7 @@ export default function App() {
           return {...c, messages: ms};
         }));
       }
-    });
-    const offStatus=Events.On("chat:status",(e:any)=>{setStatusMsgs([{id:crypto.randomUUID(),sender:"system",text:e.data.label}])});
+    });const offStatus=Events.On("chat:status",(e:any)=>{setStatusMsgs([{id:crypto.randomUUID(),sender:"system",text:e.data.label}])});
     const offSources=Events.On("chat:sources",(e:any)=>{
       const sid=e.data.sessionId;
       const msgId=e.data.msgId;
@@ -101,6 +128,44 @@ export default function App() {
     });
     return()=>{offT();offD();offStatus();offSources()};
   },[]);
+
+  // Track file processing state globally — single listener for both counter and toast
+  const ingestCountRef = useRef({ success: 0, error: 0, total: 0 });
+  useEffect(()=>{
+    const off = Events.On("ingest:progress", (e: any) => {
+      if (!e.data) return;
+      const step = e.data.step;
+      if (step === "chunking") {
+        processingRef.current += 1;
+        ingestCountRef.current.total += 1;
+        setIsIngesting(true);
+      } else if (step === "complete") {
+        processingRef.current = Math.max(0, processingRef.current - 1);
+        ingestCountRef.current.success += 1;
+        if (processingRef.current === 0) setIsIngesting(false);
+      }
+    });
+    return () => off();
+  },[]);
+
+  // Auto-refresh collections and show toast when processing finishes
+  const prevIngesting = useRef(false);
+  useEffect(() => {
+    if (prevIngesting.current && !isIngesting) {
+      const { success, error, total } = ingestCountRef.current;
+      if (total > 0) {
+        if (error > 0) {
+          addToast("info", `Ingestion complete: ${success}/${total} documents processed${error > 0 ? `, ${error} failed` : ''}`);
+        } else {
+          addToast("success", `Ingestion complete: All ${total} documents processed successfully`);
+        }
+      }
+      ingestCountRef.current = { success: 0, error: 0, total: 0 };
+      loadCols();
+      loadDocs(activeColId);
+    }
+    prevIngesting.current = isIngesting;
+  }, [isIngesting]);
 
   const loadCols=async()=>{try{const c:any=await GetCollections();if(c?.length){setCols(c);setActiveColId(c[0].id)}}catch(e){console.error(e)}};
   const loadDocs=async(colId:number)=>{try{const d:any=await GetDocumentsByCollection(colId);setIdocs(d?.length?d:[])}catch(e){setIdocs([])}};
@@ -127,7 +192,7 @@ export default function App() {
           }
         }
       } catch(e) { /* ignore source loading errors */ }
-      loaded.push({id:sess.id,title:sess.title||"New Chat",messages:(ms||[]).map((m:any)=>({id:m.id.toString(),sender:m.role==="user"?"user":"ai",text:m.content})),createdAt:sess.createdAt*1000,archived:sess.archived===true,pinned:sess.pinned===true,messageSources:msgSources})}setChats(loaded);if(loaded.length&&!activeChatId)setActiveChatId(loaded[0].id)}else if(!createdInitialChat.current){createdInitialChat.current=true;newChat()}}catch(e){console.error(e)}
+      loaded.push({id:sess.id,title:sess.title||"New Chat",messages:(ms||[]).map((m:any)=>({id:m.id.toString(),sender:m.role==="user"?"user":"ai",text:m.content,cancelled:m.cancelled===true})),createdAt:sess.createdAt*1000,archived:sess.archived===true,pinned:sess.pinned===true,messageSources:msgSources})}setChats(loaded);if(loaded.length&&!activeChatId)setActiveChatId(loaded[0].id)}else if(!createdInitialChat.current){createdInitialChat.current=true;newChat()}}catch(e){console.error(e)}
   };
 
   const newChat=async()=>{const empty=chats.find(c=>c.messages.length===0&&!c.archived);if(empty){setActiveChatId(empty.id);setTab("chat");return}try{const id=await CreateChat("New Chat",activeColId);setChats(p=>[{id,title:"New Chat",messages:[],createdAt:Date.now(),archived:false,pinned:false},...p]);setActiveChatId(id);setTab("chat")}catch(e){console.error(e)}};
@@ -180,6 +245,12 @@ export default function App() {
       return getErrMsg(e);
     }
   }, [activeColId]);
+
+  const handleStopGeneration = useCallback(async () => {
+    try { await CancelGeneration(activeChatId); } catch (e) { /* ignore */ }
+    // Don't manipulate state here — the chat:done event handler
+    // (fired by CancelGeneration's emit) handles adding the cancelled flag
+  }, [activeChatId]);
 
   const viewDocumentContent = async (docId: number) => {
     setSelectedDocId(docId);
@@ -235,7 +306,8 @@ export default function App() {
         onCtxMenu={(id, x, y) => { setCtxMenuChatId(id); setCtxMenuPos({ x, y }); }} />
 
       {tab === "chat" && <ChatPanel activeChat={activeChat} isArchived={isArchived} input={input} gen={gen} statusMsgs={statusMsgs} T={T} theme={theme} collSelector={collSelector}
-        onInputChange={setInput} onSend={send} onThemeToggle={() => setTheme(theme === "dark" ? "light" : "dark")} onOpenUploadModal={() => setShowUploadModal(true)} />}
+        onInputChange={setInput} onSend={send} onThemeToggle={() => setTheme(theme === "dark" ? "light" : "dark")} onOpenUploadModal={() => setShowUploadModal(true)}
+        onStopGeneration={gen ? handleStopGeneration : undefined} />}
 
       {tab === "search" && <SearchPanel sq={sq} sResults={sResults} sBusy={sBusy} sDone={sDone} searchFilter={searchFilter} filteredResults={filteredResults} T={T} displayScore={displayScore}
         onSearch={doSearch} onClear={clearSearch} onSqChange={setSq} onFilterChange={setSearchFilter} />}
@@ -254,7 +326,7 @@ export default function App() {
         </div>); })()}
 
       {/* Upload Modal */}
-      <FileUploadModal open={showUploadModal} onClose={() => { setShowUploadModal(false); loadCols(); loadDocs(activeColId); }} collectionId={activeColId} collectionName={activeCol?.name || "Unknown"} onUpload={processFile} onIngestPaste={handleIngestPaste} theme={theme} />
+      <FileUploadModal open={showUploadModal} onClose={closeUploadModal} collectionId={activeColId} collectionName={activeCol?.name || "Unknown"} onUpload={processFile} onIngestPaste={handleIngestPaste} theme={theme} />
 
       {/* Rename Modal */}
       <Modal open={renameModal.open} onClose={() => setRenameModal({ open: false, chatId: 0, value: "" })} title="Rename Chat" theme={theme}>

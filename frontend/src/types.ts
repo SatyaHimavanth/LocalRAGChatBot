@@ -1,4 +1,4 @@
-export interface Message { id: string; sender: "user" | "ai" | "system"; text: string; }
+export interface Message { id: string; sender: "user" | "ai" | "system"; text: string; cancelled?: boolean; }
 export interface Chat { id: number; title: string; messages: Message[]; createdAt: number; archived: boolean; pinned: boolean; messageSources?: Record<number, SourceRef[]>; }
 export interface SourceRef { id?: number; refNumber: number; chunkId: number; content: string; filename: string; collectionId: number; collectionName: string; similarity: number; }
 export interface Collection { id: number; name: string; docCount: number; }
