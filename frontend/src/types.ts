@@ -15,8 +15,8 @@ export interface ThemeVars {
 }
 
 export const themeVars: Record<Theme, ThemeVars> = {
-  dark: { bg: "#06070f", bg2: "rgba(255,255,255,0.03)", text: "rgba(255,255,255,0.85)", text2: "rgba(255,255,255,0.75)", text3: "rgba(255,255,255,0.4)", border: "rgba(255,255,255,0.06)", inputBg: "rgba(255,255,255,0.04)", bubbleUser: "rgba(99,102,241,0.2)", bubbleAI: "rgba(255,255,255,0.06)" },
-  light: { bg: "#f5f5f7", bg2: "rgba(0,0,0,0.02)", text: "rgba(0,0,0,0.85)", text2: "rgba(0,0,0,0.7)", text3: "rgba(0,0,0,0.4)", border: "rgba(0,0,0,0.08)", inputBg: "rgba(255,255,255,0.8)", bubbleUser: "rgba(99,102,241,0.12)", bubbleAI: "rgba(0,0,0,0.04)" },
+  dark: { bg: "#06070f", bg2: "#1a1b2e", text: "rgba(255,255,255,0.85)", text2: "rgba(255,255,255,0.75)", text3: "rgba(255,255,255,0.4)", border: "rgba(255,255,255,0.08)", inputBg: "rgba(255,255,255,0.06)", bubbleUser: "rgba(99,102,241,0.2)", bubbleAI: "rgba(255,255,255,0.06)" },
+  light: { bg: "#f5f5f7", bg2: "#ffffff", text: "rgba(0,0,0,0.85)", text2: "rgba(0,0,0,0.7)", text3: "rgba(0,0,0,0.4)", border: "rgba(0,0,0,0.08)", inputBg: "#ffffff", bubbleUser: "rgba(99,102,241,0.12)", bubbleAI: "rgba(0,0,0,0.04)" },
 };
 
 export const getErrMsg = (e: any): string => {

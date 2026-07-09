@@ -265,7 +265,7 @@ export default function App() {
       </Modal>
 
       <ConfirmModal open={confirm.open} title={confirm.title} message={confirm.message} detail={confirm.detail} confirmLabel={confirm.confirmLabel} onConfirm={confirm.onConfirm} onCancel={() => setConfirm({ open: false, title: "", message: "", detail: "", confirmLabel: "", onConfirm: () => {} })} theme={theme} />
-      <Toast toasts={toasts} onDismiss={dismissToast} />
+      <Toast toasts={toasts} onDismiss={dismissToast} theme={theme} />
     </div>
   </>);
 }

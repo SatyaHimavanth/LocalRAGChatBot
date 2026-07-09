@@ -52,11 +52,11 @@ function renderMarkdown(text: string): string {
 function applyMarkdownFormatting(html: string): string {
   // Code blocks (```...```) — before inline code
   html = html.replace(/```(\w*)\s*([\s\S]*?)```/g, (_m, _lang, code) => {
-    return `<pre style="background:rgba(0,0,0,0.2);border-radius:6px;padding:12px;overflow-x:auto;margin:8px 0;font-size:12px;line-height:1.5"><code>${code.trim()}</code></pre>`;
+    return `<pre style="background:rgba(0,0,0,0.1);border-radius:6px;padding:12px;overflow-x:auto;margin:8px 0;font-size:12px;line-height:1.5"><code>${code.trim()}</code></pre>`;
   });
 
   // Inline code (`...`)
-  html = html.replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.15);padding:1px 5px;border-radius:3px;font-size:0.9em">$1</code>');
+  html = html.replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.08);padding:1px 5px;border-radius:3px;font-size:0.9em">$1</code>');
 
   // Bold
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
@@ -87,10 +87,10 @@ function applyMarkdownFormatting(html: string): string {
   html = html.replace(/^# (.+)$/gm, "<h2 style='font-size:16px;font-weight:600;margin:12px 0 4px'>$1</h2>");
 
   // Blockquotes
-  html = html.replace(/^&gt;\s*(.+)$/gm, '<blockquote style="border-left:3px solid rgba(99,102,241,0.4);margin:6px 0;padding:4px 12px;color:rgba(255,255,255,0.6)">$1</blockquote>');
+  html = html.replace(/^&gt;\s*(.+)$/gm, '<blockquote style="border-left:3px solid rgba(99,102,241,0.4);margin:6px 0;padding:4px 12px;color:inherit;opacity:0.7">$1</blockquote>');
 
   // Horizontal rules
-  html = html.replace(/^[-*_]{3,}\s*$/gm, '<hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:12px 0">');
+  html = html.replace(/^[-*_]{3,}\s*$/gm, '<hr style="border:none;border-top:1px solid;border-top-color:inherit;opacity:0.1;margin:12px 0">');
 
   // Line breaks and paragraphs
   html = html.replace(/\n\n+/g, "</p><p style='margin:6px 0'>");

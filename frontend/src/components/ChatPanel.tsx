@@ -93,7 +93,7 @@ export function ChatPanel({activeChat,isArchived,input,gen,statusMsgs,T,theme,co
         {statusMsgs.map(sm=>(
           <div key={sm.id} style={{marginBottom:12,display:"flex",flexDirection:"column",alignItems:"flex-start"}}>
             <div style={{fontSize:11,color:T.text3,marginBottom:4}}>LocalRAG AI</div>
-            <StatusBubble label={sm.text}/>
+            <StatusBubble label={sm.text} T={T}/>
           </div>
         ))}
         <div style={{flex:1,minHeight:0}}/>
@@ -108,22 +108,22 @@ export function ChatPanel({activeChat,isArchived,input,gen,statusMsgs,T,theme,co
       {/* Source Reference Modal */}
       {sourceModal && (
         <div onClick={()=>setSourceModal(null)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.6)",backdropFilter:"blur(4px)"}}>
-          <div onClick={e=>e.stopPropagation()} style={{background:"#1e1f36",border:"1px solid rgba(255,255,255,0.1)",borderRadius:14,boxShadow:"0 20px 60px rgba(0,0,0,0.5)",padding:24,width:"90%",maxWidth:600,maxHeight:"80vh",display:"flex",flexDirection:"column"}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:T.bg2,border:"1px solid "+T.border,borderRadius:14,boxShadow:"0 20px 60px rgba(0,0,0,0.5)",padding:24,width:"90%",maxWidth:600,maxHeight:"80vh",display:"flex",flexDirection:"column",transition:"background 0.3s, border 0.3s"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexShrink:0}}>
-              <div style={{fontSize:16,fontWeight:600,color:"rgba(255,255,255,0.9)"}}>Source [{sourceModal.refNum}]</div>
-              <button onClick={()=>setSourceModal(null)} style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,0.3)",padding:2}}><I.X/></button>
+              <div style={{fontSize:16,fontWeight:600,color:T.text}}>Source [{sourceModal.refNum}]</div>
+              <button onClick={()=>setSourceModal(null)} style={{background:"none",border:"none",cursor:"pointer",color:T.text3,padding:2}}><I.X/></button>
             </div>
             {(()=>{
               const src = sourceModal.sources.find(s => s.refNumber === sourceModal.refNum);
-              if (!src) return <div style={{color:"rgba(255,255,255,0.5)",fontSize:13}}>Source not found.</div>;
+              if (!src) return <div style={{color:T.text3,fontSize:13}}>Source not found.</div>;
               return (
                 <div style={{overflowY:"auto",flex:1}}>
                   <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
                     <span style={{fontSize:11,padding:"3px 8px",borderRadius:4,background:"rgba(99,102,241,0.15)",color:"rgba(99,102,241,0.8)"}}>{src.filename}</span>
                     <span style={{fontSize:11,padding:"3px 8px",borderRadius:4,background:"rgba(34,197,94,0.12)",color:"rgba(34,197,94,0.8)"}}>{src.collectionName}</span>
-                    <span style={{fontSize:11,padding:"3px 8px",borderRadius:4,background:"rgba(255,255,255,0.06)",color:"rgba(255,255,255,0.6)"}}>{(src.similarity * 100).toFixed(1)}% match</span>
+                    <span style={{fontSize:11,padding:"3px 8px",borderRadius:4,background:T.bg2,border:"1px solid "+T.border,color:T.text3}}>{(src.similarity * 100).toFixed(1)}% match</span>
                   </div>
-                  <div style={{fontSize:12,lineHeight:1.7,color:"rgba(255,255,255,0.8)",whiteSpace:"pre-wrap",fontFamily:"monospace",padding:"12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.06)",background:"rgba(255,255,255,0.03)",wordBreak:"break-word",overflowX:"auto"}}>
+                  <div style={{fontSize:12,lineHeight:1.7,color:T.text2,whiteSpace:"pre-wrap",fontFamily:"monospace",padding:"12px",borderRadius:8,border:"1px solid "+T.border,background:T.inputBg,wordBreak:"break-word",overflowX:"auto",transition:"background 0.3s, border 0.3s"}}>
                     {src.content}
                   </div>
                   {sourceModal.sources.length > 1 && (
@@ -131,8 +131,8 @@ export function ChatPanel({activeChat,isArchived,input,gen,statusMsgs,T,theme,co
                       {sourceModal.sources.map(s => (
                         <span key={s.refNumber} onClick={()=>setSourceModal({sources: sourceModal.sources, refNum: s.refNumber})}
                           style={{fontSize:11,padding:"3px 8px",borderRadius:4,cursor:"pointer",
-                            background:s.refNumber===sourceModal.refNum?"rgba(99,102,241,0.25)":"rgba(255,255,255,0.04)",
-                            color:s.refNumber===sourceModal.refNum?"rgba(99,102,241,0.9)":"rgba(255,255,255,0.5)",
+                            background:s.refNumber===sourceModal.refNum?"rgba(99,102,241,0.25)":"transparent",
+                            color:s.refNumber===sourceModal.refNum?"rgba(99,102,241,0.9)":T.text3,
                             border:s.refNumber===sourceModal.refNum?"1px solid rgba(99,102,241,0.4)":"1px solid transparent"}}>
                           [{s.refNumber}] {s.filename}
                         </span>
@@ -157,9 +157,9 @@ export function ChatPanel({activeChat,isArchived,input,gen,statusMsgs,T,theme,co
   );
 }
 
-function StatusBubble({label}:{label:string}){return(
+function StatusBubble({label, T}:{label:string; T?: ThemeVars}){return(
   <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 18px",marginBottom:12,borderRadius:16,borderBottomLeftRadius:4,background:"rgba(99,102,241,0.1)",border:"1px solid rgba(99,102,241,0.15)",alignSelf:"flex-start",maxWidth:"fit-content"}}>
-    <I.Spinner/><span style={{fontSize:12,color:"rgba(255,255,255,0.6)"}}>{label}</span>
+    <I.Spinner/><span style={{fontSize:12,color:T?T.text3:"rgba(255,255,255,0.6)"}}>{label}</span>
   </div>
 );}
 

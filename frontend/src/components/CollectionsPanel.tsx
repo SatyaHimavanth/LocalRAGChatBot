@@ -63,7 +63,7 @@ export function CollectionsPanel(props:CollectionsPanelProps){
       </div>
 
       {/* Document table + content preview */}
-      <div style={{flex:1,display:"flex",gap:16,overflow:"visible",flexWrap:"wrap",alignContent:"flex-start",minHeight:0}}>
+      <div style={{flex:1,display:"flex",gap:16,overflow:"hidden",flexWrap:"wrap",alignContent:"flex-start",minHeight:0}}>
         {/* Left: Sortable document table */}
         <div style={{flex:"1 1 350px",minWidth:260,display:"flex",flexDirection:"column",overflow:"hidden"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexShrink:0}}>
