@@ -89,14 +89,27 @@ export function CollectionsPanel(props:CollectionsPanelProps){
           {/* Table body */}
           <div style={{flex:1,overflowY:"auto"}}>
             {sortedDocs.length===0?<div style={{fontSize:12,color:T.text3,padding:"8px"}}>No documents.</div>
-            :sortedDocs.map(d=>(
+            :sortedDocs.map(d=>{
+              const st = d.status || "ready";
+              const statusColor = st === "ready" ? "rgba(34,197,94,0.75)"
+                : st === "failed" ? "rgba(239,68,68,0.75)"
+                : st === "embedding" || st === "queued" ? "rgba(234,179,8,0.85)"
+                : T.text3;
+              return (
               <div key={d.id} onClick={()=>props.onViewDoc(d.id)} style={{display:"flex",fontSize:12,padding:"6px 8px",color:T.text2,borderRadius:4,cursor:"pointer",background:props.selectedDocId===d.id?"rgba(99,102,241,0.1)":"transparent",borderBottom:"1px solid "+T.border,alignItems:"center"}}>
-                <div style={{flex:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:T.text}}>{d.filename}</div>
+                <div style={{flex:3,overflow:"hidden",minWidth:0}}>
+                  <div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:T.text}}>{d.filename}</div>
+                  {st !== "ready" && (
+                    <div style={{fontSize:10,color:statusColor,marginTop:1}}>
+                      {st}{d.expectedChunks ? ` · ${d.chunkCount}/${d.expectedChunks}` : ""}
+                    </div>
+                  )}
+                </div>
                 <div style={{flex:1,textAlign:"center",color:T.text3}}>{d.chunkCount}</div>
                 <div style={{flex:2,textAlign:"right",color:T.text3,fontSize:10}}>{new Date(d.createdAt*1000).toLocaleDateString([],{month:"short",day:"numeric",year:"numeric"})}</div>
                 <button onClick={e=>{e.stopPropagation();props.onDeleteDoc(d.id)}} style={{background:"none",border:"none",cursor:"pointer",color:"rgba(239,68,68,0.5)",padding:"2px 0 2px 6px",flexShrink:0}}><I.Trash/></button>
               </div>
-            ))}
+            );})}
           </div>
         </div>
 

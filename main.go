@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	appsvc "changeme/internal/app"
@@ -15,6 +16,7 @@ import (
 	"changeme/internal/store"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed all:frontend/dist
@@ -134,7 +136,8 @@ func main() {
 		},
 	})
 
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	var forceClose atomic.Bool
+	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:  "Local RAG ChatBot",
 		Width:  1000,
 		Height: 618,
@@ -145,6 +148,34 @@ func main() {
 		},
 		BackgroundColour: application.NewRGB(6, 7, 15),
 		URL:              "/",
+	})
+
+	// Warn when closing during ingest; staged text is durable and can resume later.
+	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		if forceClose.Load() || !chatService.IsIngesting() {
+			return
+		}
+		e.Cancel()
+
+		allowClose := false
+		dialog := app.Dialog.Question().
+			SetTitle("Ingestion in progress").
+			SetMessage("Documents are still being prepared or embedded.\n\nStaged text is saved. You can resume embedding after restart.\n\nClose anyway?")
+		stayBtn := dialog.AddButton("Stay")
+		closeBtn := dialog.AddButton("Close")
+		dialog.SetDefaultButton(stayBtn)
+		dialog.SetCancelButton(stayBtn)
+		closeBtn.OnClick(func() {
+			allowClose = true
+		})
+		dialog.Show()
+
+		if allowClose {
+			chatService.CancelIngest()
+			chatService.WaitIngestIdle(5000)
+			forceClose.Store(true)
+			win.Close()
+		}
 	})
 
 	go func() {

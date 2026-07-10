@@ -35,6 +35,11 @@ export interface Document {
     "content": string;
     "createdAt": number;
     "chunkCount": number;
+    "status": string;
+    "expectedChunks": number;
+    "batchId": string;
+    "errorMessage": string;
+    "updatedAt": number;
 }
 
 export interface SourceChunkRef {

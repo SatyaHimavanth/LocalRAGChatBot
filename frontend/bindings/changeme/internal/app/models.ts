@@ -17,6 +17,53 @@ export interface FileUploadResult {
     "existingCreated"?: number;
 }
 
+/**
+ * IngestBatchResult summarizes stage + embed for a batch.
+ */
+export interface IngestBatchResult {
+    "batchId": string;
+    "items": StageResult[] | null;
+    "staged": number;
+    "completed": number;
+    "failed": number;
+    "cancelled": boolean;
+}
+
+/**
+ * IngestFilePayload is one file or paste item in a batch.
+ */
+export interface IngestFilePayload {
+    "filename": string;
+
+    /**
+     * file bytes (base64); empty when using TextContent
+     */
+    "base64Data": string;
+
+    /**
+     * paste path
+     */
+    "textContent": string;
+    "replace": boolean;
+}
+
+/**
+ * IngestJob is a durable incomplete/ready job exposed to the UI.
+ */
+export interface IngestJob {
+    "docId": number;
+    "collectionId": number;
+    "filename": string;
+    "status": string;
+    "chunkCount": number;
+    "expectedChunks": number;
+    "batchId": string;
+    "errorMessage": string;
+    "progressPct": number;
+    "updatedAt": number;
+    "createdAt": number;
+}
+
 export interface SearchResult {
     "content": string;
     "score": number;
@@ -25,4 +72,18 @@ export interface SearchResult {
     "collectionName": string;
     "filename": string;
     "chunkId": number;
+}
+
+/**
+ * StageResult is the outcome of staging a single file/text.
+ */
+export interface StageResult {
+    "filename": string;
+
+    /**
+     * staged | duplicate | error | replaced
+     */
+    "status": string;
+    "message": string;
+    "docId"?: number;
 }

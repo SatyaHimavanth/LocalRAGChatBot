@@ -1,11 +1,9 @@
-﻿package app
+package app
 
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"fmt"
 	"math"
 	"os"
@@ -17,7 +15,6 @@ import (
 	"time"
 
 	"changeme/internal/engine"
-	"changeme/internal/ingest"
 	"changeme/internal/store"
 
 	llama "github.com/tcpipuk/llama-go"
@@ -122,11 +119,16 @@ type ChatService struct {
 	// cancelFuncs tracks active streaming sessions for cancellation
 	cancelFuncs map[int64]context.CancelFunc
 	cancelMu    sync.Mutex
+
+	// durable ingest worker state (see ingest_jobs.go)
+	ingestOnce sync.Once
+	ingestRT   *ingestRuntime
 }
 
 func (s *ChatService) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	s.app = application.Get()
 	s.cancelFuncs = make(map[int64]context.CancelFunc)
+	s.CleanupIncompleteOnStartup()
 	return nil
 }
 
@@ -346,7 +348,6 @@ func (s *ChatService) persistCancelledMessage(sessionID int64) {
 	}
 	s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": int64(-1), "cancelled": true})
 }
-
 
 //  Messaging
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -584,145 +585,70 @@ type FileUploadResult struct {
 	ExistingCreated int64  `json:"existingCreated,omitempty"`
 }
 
-// UploadFile handles file upload: base64 data -> extract text -> hash -> check dupe -> ingest.
-// If replace is true and file exists, it replaces the old content.
+// UploadFile stages one file then embeds it via the durable two-phase pipeline.
+// Prefer StartIngestBatch for multi-file uploads (extract-all-then-embed).
 func (s *ChatService) UploadFile(filename string, base64Data string, collectionID int64, replace bool) (*FileUploadResult, error) {
-	if s.Engine == nil || s.DB == nil {
-		return &FileUploadResult{Filename: filename, Status: "error", Message: "Engine or database not initialized"}, nil
-	}
-
-	// 1. Decode base64
-	data, err := base64.StdEncoding.DecodeString(base64Data)
-	if err != nil {
-		return &FileUploadResult{Filename: filename, Status: "error", Message: "Failed to decode file data"}, nil
-	}
-
-	// 2. Extract text using parser
-	text, err := ingest.ParseFileBytes(data, filename)
+	batch, err := s.StartIngestBatch(collectionID, []IngestFilePayload{{
+		Filename:   filename,
+		Base64Data: base64Data,
+		Replace:    replace,
+	}})
 	if err != nil {
 		return &FileUploadResult{Filename: filename, Status: "error", Message: err.Error()}, nil
 	}
-	if strings.TrimSpace(text) == "" {
-		return &FileUploadResult{Filename: filename, Status: "error", Message: "No extractable text found in file"}, nil
+	if len(batch.Items) == 0 {
+		return &FileUploadResult{Filename: filename, Status: "error", Message: "No result"}, nil
 	}
-
-	// 3. Compute hash on extracted text content
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimSpace(text))))
-
-	// 4. Check for duplicate
-	existing, err := store.GetDocumentByHash(s.DB, hash, collectionID)
-	if err != nil {
-		return &FileUploadResult{Filename: filename, Status: "error", Message: "Database error checking duplicates"}, nil
-	}
-	if existing != nil {
-		createdTime := time.Unix(existing.CreatedAt, 0).Format("Jan 2, 2006 at 15:04")
-		if !replace {
+	item := batch.Items[0]
+	colName := s.getCollectionName(collectionID)
+	switch item.Status {
+	case "duplicate":
+		return &FileUploadResult{
+			Filename: filename, Status: "duplicate", Message: item.Message,
+			DocID: item.DocID, ExistingDocID: item.DocID, CollectionName: colName,
+		}, nil
+	case "error":
+		return &FileUploadResult{Filename: filename, Status: "error", Message: item.Message}, nil
+	case "replaced":
+		status := "replaced"
+		if batch.Completed > 0 {
 			return &FileUploadResult{
-				Filename:        filename,
-				Status:          "duplicate",
-				Message:         fmt.Sprintf("This file is already present in the collection (uploaded %s)", createdTime),
-				ExistingDocID:   existing.ID,
-				ExistingCreated: existing.CreatedAt,
+				Filename: filename, Status: status, Message: "File replaced and re-ingested successfully",
+				DocID: item.DocID, CollectionName: colName, ChunkCount: 0,
 			}, nil
 		}
-		// Replace: delete old chunks, update content, re-ingest
-		if err := store.DeleteDocumentChunks(s.DB, existing.ID); err != nil {
-			return &FileUploadResult{Filename: filename, Status: "error", Message: "Failed to replace file: " + err.Error()}, nil
+		if batch.Cancelled {
+			return &FileUploadResult{
+				Filename: filename, Status: "error",
+				Message: "Interrupted during embedding — resume from incomplete jobs",
+				DocID:   item.DocID, CollectionName: colName,
+			}, nil
 		}
-		if err := store.UpdateDocumentContent(s.DB, existing.ID, text, hash); err != nil {
-			return &FileUploadResult{Filename: filename, Status: "error", Message: "Failed to update document"}, nil
+		if batch.Failed > 0 {
+			return &FileUploadResult{Filename: filename, Status: "error", Message: "Embedding failed", DocID: item.DocID}, nil
 		}
-		// Re-ingest with new content
-		words := len(strings.Fields(text))
-		s.emit("ingest:progress", map[string]any{
-			"step": "chunking", "label": "Chunking text...", "pct": 0, "detail": "",
-		})
-		chunks := ingest.SplitText(text, 500, 100)
-		total := len(chunks)
-		s.emit("ingest:progress", map[string]any{
-			"step": "chunked", "label": fmt.Sprintf("Chunked into %d parts ✓", total),
-			"pct": 5, "detail": fmt.Sprintf("%d chunks", total),
-		})
-		for i, chunk := range chunks {
-			pct := 5 + ((i * 90) / total)
-			s.emit("ingest:progress", map[string]any{
-				"step": "embedding", "label": fmt.Sprintf("Embedding chunk %d/%d...", i+1, total),
-				"pct": pct, "detail": fmt.Sprintf("%d/%d", i+1, total),
-			})
-			embedding, err := s.Engine.Embed(chunk.Content)
-			if err != nil {
-				return &FileUploadResult{Filename: filename, Status: "error", Message: fmt.Sprintf("Embedding error: %v", err)}, nil
-			}
-			if _, err := store.InsertChunk(s.DB, existing.ID, collectionID, chunk.Content, chunk.Ord, embedding); err != nil {
-				return &FileUploadResult{Filename: filename, Status: "error", Message: fmt.Sprintf("Insert error: %v", err)}, nil
-			}
+		return &FileUploadResult{Filename: filename, Status: status, Message: item.Message, DocID: item.DocID, CollectionName: colName}, nil
+	case "staged":
+		if batch.Completed > 0 {
+			return &FileUploadResult{
+				Filename: filename, Status: "success", Message: "File ingested successfully",
+				DocID: item.DocID, CollectionName: colName,
+			}, nil
 		}
-		s.emit("ingest:progress", map[string]any{
-			"step": "complete", "label": fmt.Sprintf("Complete! %d chunks ingested.", total),
-			"pct": 100, "detail": "",
-		})
-		colName := s.getCollectionName(collectionID)
-		return &FileUploadResult{
-			Filename: filename, Status: "replaced", Message: "File replaced and re-ingested successfully",
-			DocID: existing.ID, CollectionName: colName, WordCount: words, ChunkCount: total,
-		}, nil
-	}
-
-	// 5. New file: emit progress, ingest
-	colName := s.getCollectionName(collectionID)
-	words := len(strings.Fields(text))
-	s.emit("ingest:progress", map[string]any{
-		"step": "chunking", "label": "Chunking text...", "pct": 0, "detail": "",
-	})
-	chunks := ingest.SplitText(text, 500, 100)
-	total := len(chunks)
-	if total == 0 {
-		return &FileUploadResult{Filename: filename, Status: "error", Message: "No content to ingest"}, nil
-	}
-	s.emit("ingest:progress", map[string]any{
-		"step": "chunked", "label": fmt.Sprintf("Chunked into %d parts ✓", total),
-		"pct": 5, "detail": fmt.Sprintf("%d chunks", total),
-	})
-
-	// Register document with hash and content
-	docID, err := store.AddDocument(s.DB, collectionID, filename, hash, text)
-	if err != nil {
-		return &FileUploadResult{Filename: filename, Status: "error", Message: fmt.Sprintf("Registering document: %v", err)}, nil
-	}
-
-	embedErr := false
-	for i, chunk := range chunks {
-		pct := 5 + ((i * 90) / total)
-		s.emit("ingest:progress", map[string]any{
-			"step": "embedding", "label": fmt.Sprintf("Embedding chunk %d/%d...", i+1, total),
-			"pct": pct, "detail": fmt.Sprintf("%d/%d", i+1, total),
-		})
-		embedding, err := s.Engine.Embed(chunk.Content)
-		if err != nil {
-			embedErr = true
-			break
+		if batch.Cancelled {
+			return &FileUploadResult{
+				Filename: filename, Status: "error",
+				Message: "Interrupted during embedding — resume from incomplete jobs",
+				DocID:   item.DocID, CollectionName: colName,
+			}, nil
 		}
-		if _, err := store.InsertChunk(s.DB, docID, collectionID, chunk.Content, chunk.Ord, embedding); err != nil {
-			embedErr = true
-			break
+		if batch.Failed > 0 {
+			return &FileUploadResult{Filename: filename, Status: "error", Message: "Embedding failed", DocID: item.DocID}, nil
 		}
+		return &FileUploadResult{Filename: filename, Status: "success", Message: item.Message, DocID: item.DocID, CollectionName: colName}, nil
+	default:
+		return &FileUploadResult{Filename: filename, Status: "error", Message: item.Message}, nil
 	}
-
-	// If embedding failed, clean up the document record so it doesn't appear as a broken entry
-	if embedErr {
-		store.DeleteDocument(s.DB, docID)
-		return &FileUploadResult{Filename: filename, Status: "error", Message: "Embedding failed partway through. Document cleaned up. Try again."}, nil
-	}
-
-	s.emit("ingest:progress", map[string]any{
-		"step": "complete", "label": fmt.Sprintf("Complete! %d chunks ingested.", total),
-		"pct": 100, "detail": "",
-	})
-
-	return &FileUploadResult{
-		Filename: filename, Status: "success", Message: fmt.Sprintf("File ingested: %d chunks", total),
-		DocID: docID, CollectionName: colName, WordCount: words, ChunkCount: total,
-	}, nil
 }
 
 // GetDocumentContent returns the full extracted text content of a document.
@@ -760,6 +686,7 @@ func (s *ChatService) CheckFileHash(hash string, collectionID int64) (*FileUploa
 	}, nil
 }
 
+// IngestFile stages pasted text then embeds via the durable two-phase pipeline.
 func (s *ChatService) IngestFile(collectionID int64, filename string, fileContent string) error {
 	if s.Engine == nil || s.DB == nil {
 		return fmt.Errorf("engine or database not initialized")
@@ -781,47 +708,25 @@ func (s *ChatService) IngestFile(collectionID int64, filename string, fileConten
 		collectionID = id
 	}
 
-	s.emit("ingest:progress", map[string]any{
-		"step": "chunking", "label": "Chunking text...", "pct": 0, "detail": "",
-	})
-
-	chunks := ingest.SplitText(fileContent, 500, 100)
-	total := len(chunks)
-	if total == 0 {
-		return fmt.Errorf("no content to ingest")
-	}
-
-	s.emit("ingest:progress", map[string]any{
-		"step": "chunked", "label": fmt.Sprintf("Chunked into %d parts ✓", total),
-		"pct": 5, "detail": fmt.Sprintf("%d chunks", total),
-	})
-
-	docID, err := store.AddDocument(s.DB, collectionID, filename, "", "")
+	batch, err := s.StartIngestBatch(collectionID, []IngestFilePayload{{
+		Filename:    filename,
+		TextContent: fileContent,
+	}})
 	if err != nil {
-		return fmt.Errorf("registering document: %w", err)
+		return err
 	}
-
-	for i, chunk := range chunks {
-		pct := 5 + ((i * 90) / total)
-		s.emit("ingest:progress", map[string]any{
-			"step": "embedding", "label": fmt.Sprintf("Embedding chunk %d/%d...", i+1, total),
-			"pct": pct, "detail": fmt.Sprintf("%d/%d", i+1, total),
-		})
-
-		embedding, err := s.Engine.Embed(chunk.Content)
-		if err != nil {
-			return fmt.Errorf("generating chunk embedding: %w", err)
-		}
-		_, err = store.InsertChunk(s.DB, docID, collectionID, chunk.Content, chunk.Ord, embedding)
-		if err != nil {
-			return fmt.Errorf("inserting chunk: %w", err)
-		}
+	if batch.Cancelled {
+		return fmt.Errorf("ingest interrupted — resume from incomplete jobs")
 	}
-
-	s.emit("ingest:progress", map[string]any{
-		"step": "complete", "label": fmt.Sprintf("Complete! %d chunks ingested.", total),
-		"pct": 100, "detail": "",
-	})
+	if len(batch.Items) > 0 && batch.Items[0].Status == "error" {
+		return fmt.Errorf("%s", batch.Items[0].Message)
+	}
+	if len(batch.Items) > 0 && batch.Items[0].Status == "duplicate" {
+		return fmt.Errorf("%s", batch.Items[0].Message)
+	}
+	if batch.Failed > 0 && batch.Completed == 0 {
+		return fmt.Errorf("embedding failed")
+	}
 	return nil
 }
 

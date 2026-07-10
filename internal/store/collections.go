@@ -21,7 +21,7 @@ func CreateCollection(db *sql.DB, name string) (int64, error) {
 	return res.LastInsertId()
 }
 
-// GetCollections returns all collections with their document counts.
+// GetCollections returns all collections with their ready document counts.
 func GetCollections(db *sql.DB) ([]Collection, error) {
 	rows, err := db.Query(`
 		SELECT c.id, c.name, c.created_at, COALESCE(d.doc_count, 0)
@@ -29,6 +29,7 @@ func GetCollections(db *sql.DB) ([]Collection, error) {
 		LEFT JOIN (
 			SELECT collection_id, COUNT(*) AS doc_count
 			FROM documents
+			WHERE status = 'ready' OR status IS NULL OR status = ''
 			GROUP BY collection_id
 		) d ON d.collection_id = c.id
 		ORDER BY c.created_at DESC

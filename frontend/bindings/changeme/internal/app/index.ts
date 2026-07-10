@@ -8,5 +8,9 @@ export {
 
 export type {
     FileUploadResult,
-    SearchResult
+    IngestBatchResult,
+    IngestFilePayload,
+    IngestJob,
+    SearchResult,
+    StageResult
 } from "./models.js";

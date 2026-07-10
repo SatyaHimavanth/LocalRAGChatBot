@@ -2,11 +2,46 @@ export interface Message { id: string; sender: "user" | "ai" | "system"; text: s
 export interface Chat { id: number; title: string; messages: Message[]; createdAt: number; archived: boolean; pinned: boolean; messageSources?: Record<number, SourceRef[]>; }
 export interface SourceRef { id?: number; refNumber: number; chunkId: number; content: string; filename: string; collectionId: number; collectionName: string; similarity: number; }
 export interface Collection { id: number; name: string; docCount: number; }
-export interface DocRecord { id: number; collectionId: number; filename: string; hash: string; content: string; createdAt: number; chunkCount: number; }
+export interface DocRecord {
+  id: number;
+  collectionId: number;
+  filename: string;
+  hash: string;
+  content: string;
+  createdAt: number;
+  chunkCount: number;
+  status?: string;
+  expectedChunks?: number;
+  batchId?: string;
+  errorMessage?: string;
+  updatedAt?: number;
+}
 export interface SearchResult { content: string; score: number; searchType: string; collectionId: number; collectionName: string; filename: string; chunkId: number; }
-export interface IngestProgress { step: string; label: string; pct: number; detail: string; }
+export interface IngestProgress { step: string; label: string; pct: number; detail: string; phase?: string; }
 export interface ToastMsg { id: string; type: "success"|"error"|"info"; message: string; }
-export interface FileUploadItem { id: string; file: File; status: "pending"|"processing"|"duplicate"|"replaced"|"success"|"error"; message?: string; docId?: number; progressMsg?: string; progressPct?: number; }
+export interface FileUploadItem {
+  id: string;
+  file?: File;
+  filename: string;
+  status: "pending"|"processing"|"duplicate"|"replaced"|"success"|"error"|"queued"|"embedding"|"failed"|"staged";
+  message?: string;
+  docId?: number;
+  progressMsg?: string;
+  progressPct?: number;
+}
+export interface IncompleteJob {
+  docId: number;
+  collectionId: number;
+  filename: string;
+  status: string;
+  chunkCount: number;
+  expectedChunks: number;
+  batchId: string;
+  errorMessage: string;
+  progressPct: number;
+  updatedAt: number;
+  createdAt: number;
+}
 
 export type Theme = "dark" | "light";
 export interface ThemeVars {

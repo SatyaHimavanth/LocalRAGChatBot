@@ -26,10 +26,24 @@ export function CancelGeneration(sessionID: number): $CancellablePromise<void> {
 }
 
 /**
+ * CancelIngest requests cancellation of the active ingest worker.
+ */
+export function CancelIngest(): $CancellablePromise<void> {
+    return $Call.ByID(2481471630);
+}
+
+/**
  * CheckFileHash checks if a file hash already exists in a collection.
  */
 export function CheckFileHash(hash: string, collectionID: number): $CancellablePromise<$models.FileUploadResult | null> {
     return $Call.ByID(1617768898, hash, collectionID);
+}
+
+/**
+ * CleanupIncompleteOnStartup removes staging rows and resets interrupted embedding jobs.
+ */
+export function CleanupIncompleteOnStartup(): $CancellablePromise<void> {
+    return $Call.ByID(1378031294);
 }
 
 export function CreateChat(title: string, collectionID: number): $CancellablePromise<number> {
@@ -50,6 +64,20 @@ export function DeleteCollection(collectionID: number): $CancellablePromise<void
 
 export function DeleteDocument(docID: number): $CancellablePromise<void> {
     return $Call.ByID(2035697934, docID);
+}
+
+/**
+ * DiscardAllIncomplete deletes all non-ready documents.
+ */
+export function DiscardAllIncomplete(): $CancellablePromise<number> {
+    return $Call.ByID(924053369);
+}
+
+/**
+ * DiscardIngestJob deletes one incomplete document.
+ */
+export function DiscardIngestJob(docID: number): $CancellablePromise<void> {
+    return $Call.ByID(2725518913, docID);
 }
 
 export function GetChatMessages(sessionID: number): $CancellablePromise<store$0.ChatMessage[] | null> {
@@ -76,6 +104,13 @@ export function GetDocumentsByCollection(collectionID: number): $CancellableProm
 }
 
 /**
+ * GetIncompleteJobs returns non-ready documents for resume/discard UI.
+ */
+export function GetIncompleteJobs(): $CancellablePromise<$models.IngestJob[] | null> {
+    return $Call.ByID(153934368);
+}
+
+/**
  * GetMessageSources returns source chunks for a given message.
  */
 export function GetMessageSources(msgID: number): $CancellablePromise<store$0.SourceChunkRef[] | null> {
@@ -89,12 +124,36 @@ export function GetSessionSources(sessionID: number): $CancellablePromise<store$
     return $Call.ByID(2419631210, sessionID);
 }
 
+/**
+ * IngestFile stages pasted text then embeds via the durable two-phase pipeline.
+ */
 export function IngestFile(collectionID: number, filename: string, fileContent: string): $CancellablePromise<void> {
     return $Call.ByID(1283934766, collectionID, filename, fileContent);
 }
 
+/**
+ * IsIngesting reports whether staging/embedding is currently running.
+ */
+export function IsIngesting(): $CancellablePromise<boolean> {
+    return $Call.ByID(1844145288);
+}
+
+/**
+ * NewBatchID returns a new random batch identifier.
+ */
+export function NewBatchID(): $CancellablePromise<string> {
+    return $Call.ByID(335305559);
+}
+
 export function PinChat(sessionID: number): $CancellablePromise<void> {
     return $Call.ByID(3755018561, sessionID);
+}
+
+/**
+ * ResumeIngest continues embedding for all resumable incomplete documents.
+ */
+export function ResumeIngest(): $CancellablePromise<$models.IngestBatchResult | null> {
+    return $Call.ByID(1682414391);
 }
 
 export function Search(query: string, collectionID: number): $CancellablePromise<$models.SearchResult[] | null> {
@@ -103,6 +162,13 @@ export function Search(query: string, collectionID: number): $CancellablePromise
 
 export function SendMessage(sessionID: number, collectionID: number, prompt: string): $CancellablePromise<void> {
     return $Call.ByID(279711485, sessionID, collectionID, prompt);
+}
+
+/**
+ * StartIngestBatch stages every file first, then embeds all staged jobs in the batch.
+ */
+export function StartIngestBatch(collectionID: number, files: $models.IngestFilePayload[] | null): $CancellablePromise<$models.IngestBatchResult | null> {
+    return $Call.ByID(3830860924, collectionID, files);
 }
 
 export function UnarchiveChat(sessionID: number): $CancellablePromise<void> {
@@ -118,9 +184,16 @@ export function UpdateChatTitle(sessionID: number, title: string): $CancellableP
 }
 
 /**
- * UploadFile handles file upload: base64 data -> extract text -> hash -> check dupe -> ingest.
- * If replace is true and file exists, it replaces the old content.
+ * UploadFile stages one file then embeds it via the durable two-phase pipeline.
+ * Prefer StartIngestBatch for multi-file uploads (extract-all-then-embed).
  */
 export function UploadFile(filename: string, base64Data: string, collectionID: number, replace: boolean): $CancellablePromise<$models.FileUploadResult | null> {
     return $Call.ByID(31057319, filename, base64Data, collectionID, replace);
+}
+
+/**
+ * WaitIngestIdle blocks until ingest finishes or timeout.
+ */
+export function WaitIngestIdle(timeoutMs: number): $CancellablePromise<void> {
+    return $Call.ByID(1564228111, timeoutMs);
 }

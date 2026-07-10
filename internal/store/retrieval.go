@@ -25,8 +25,10 @@ func vectorSearch(db *sql.DB, collectionID int64, queryEmbedding []float32, topK
 		SELECT v.chunk_id, c.content, v.distance
 		FROM chunks_vec v
 		JOIN chunks c ON c.id = v.chunk_id
+		JOIN documents d ON d.id = c.document_id
 		WHERE v.embedding MATCH ? AND k = ?
-		AND v.chunk_id IN (SELECT id FROM chunks WHERE collection_id = ?)
+		AND c.collection_id = ?
+		AND (d.status = 'ready' OR d.status IS NULL OR d.status = '')
 		ORDER BY v.distance
 	`, blob, topK, collectionID)
 	if err != nil {
@@ -50,7 +52,9 @@ func keywordSearch(db *sql.DB, collectionID int64, query string, topK int) ([]Sc
 		SELECT c.id, c.content, bm25(chunks_fts) AS score
 		FROM chunks_fts
 		JOIN chunks c ON c.id = chunks_fts.rowid
+		JOIN documents d ON d.id = c.document_id
 		WHERE chunks_fts MATCH ? AND c.collection_id = ?
+		AND (d.status = 'ready' OR d.status IS NULL OR d.status = '')
 		ORDER BY score
 		LIMIT ?
 	`, query, collectionID, topK)
@@ -100,7 +104,9 @@ func FallbackSearch(db *sql.DB, collectionID int64, query string, topK int) ([]S
 	querySQL := fmt.Sprintf(`
 		SELECT c.id, c.content, 0.5 AS score
 		FROM chunks c
+		JOIN documents d ON d.id = c.document_id
 		WHERE c.collection_id = ? AND (%s)
+		AND (d.status = 'ready' OR d.status IS NULL OR d.status = '')
 		ORDER BY LENGTH(c.content) ASC
 		LIMIT ?
 	`, strings.Join(likeClauses, " AND "))

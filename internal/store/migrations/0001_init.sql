@@ -12,7 +12,13 @@ CREATE TABLE IF NOT EXISTS documents (
 	summary TEXT,
 	hash TEXT NOT NULL DEFAULT '',
 	content TEXT NOT NULL DEFAULT '',
-	created_at INTEGER NOT NULL
+	created_at INTEGER NOT NULL,
+	-- Ingest job lifecycle: staging | queued | embedding | ready | failed
+	status TEXT NOT NULL DEFAULT 'ready',
+	expected_chunks INTEGER NOT NULL DEFAULT 0,
+	batch_id TEXT NOT NULL DEFAULT '',
+	error_message TEXT NOT NULL DEFAULT '',
+	updated_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS chunks (

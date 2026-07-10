@@ -1,7 +1,7 @@
 ﻿import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Events } from "@wailsio/runtime";
-import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, UploadFile, GetDocumentContent, GetSessionSources, CancelGeneration } from "../bindings/changeme/internal/app/chatservice";
-import { Message, Chat, Collection, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg } from "./types";
+import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, GetDocumentContent, GetSessionSources, CancelGeneration, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardIngestJob, DiscardAllIncomplete } from "../bindings/changeme/internal/app/chatservice";
+import { Message, Chat, Collection, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob } from "./types";
 import { I } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
@@ -42,17 +42,40 @@ export default function App() {
   const [activeColId,setActiveColId]=useState(1);
   const [newColName,setNewColName]=useState("");
   const [isIngesting, setIsIngesting] = useState(false);
-  const processingRef = useRef(0);
   const [idocs,setIdocs]=useState<DocRecord[]>([]);
   const [selectedDocId,setSelectedDocId]=useState<number|null>(null);
   const [selectedDocContent,setSelectedDocContent]=useState("");
 
   const [showUploadModal,setShowUploadModal]=useState(false);
-  const closeUploadModal = () => { setShowUploadModal(false); loadCols(); loadDocs(activeColId); };
+  const [incompleteJobs,setIncompleteJobs]=useState<IncompleteJob[]>([]);
+  const closeUploadModal = () => { setShowUploadModal(false); loadCols(); loadDocs(activeColId); loadIncompleteJobs(); };
 
   const [toasts,setToasts]=useState<ToastMsg[]>([]);
   const addToast=useCallback((type:"success"|"error"|"info",message:string)=>{const id=crypto.randomUUID();setToasts(p=>[...p,{id,type,message}]);setTimeout(()=>setToasts(p=>p.filter(t=>t.id!==id)),5000)},[]);
   const dismissToast=(id:string)=>setToasts(p=>p.filter(t=>t.id!==id));
+
+  const loadIncompleteJobs = useCallback(async () => {
+    try {
+      const jobs: any = await GetIncompleteJobs();
+      const list = (jobs || []).map((j: any) => ({
+        docId: j.docId ?? j.DocID ?? 0,
+        collectionId: j.collectionId ?? j.CollectionID ?? 0,
+        filename: j.filename ?? j.Filename ?? "",
+        status: j.status ?? j.Status ?? "",
+        chunkCount: j.chunkCount ?? j.ChunkCount ?? 0,
+        expectedChunks: j.expectedChunks ?? j.ExpectedChunks ?? 0,
+        batchId: j.batchId ?? j.BatchID ?? "",
+        errorMessage: j.errorMessage ?? j.ErrorMessage ?? "",
+        progressPct: j.progressPct ?? j.ProgressPct ?? 0,
+        updatedAt: j.updatedAt ?? j.UpdatedAt ?? 0,
+        createdAt: j.createdAt ?? j.CreatedAt ?? 0,
+      })) as IncompleteJob[];
+      setIncompleteJobs(list);
+      if (list.length > 0) setIsIngesting(false);
+    } catch (e) {
+      console.error("Failed to load incomplete jobs:", e);
+    }
+  }, []);
 
   const [confirm,setConfirm]=useState<{open:boolean;title:string;message:string;detail:string;confirmLabel:string;onConfirm:()=>void}>({open:false,title:"",message:"",detail:"",confirmLabel:"Delete",onConfirm:()=>{}});
   const [renameModal,setRenameModal]=useState<{open:boolean;chatId:number;value:string}>({open:false,chatId:0,value:""});
@@ -65,7 +88,7 @@ export default function App() {
 
   useEffect(()=>{const h=(e:MouseEvent)=>{if(ctxRef.current&&!ctxRef.current.contains(e.target as Node))setCtxMenuChatId(null)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
   useEffect(()=>{const h=(e:MouseEvent)=>{if(colDropdownRef.current&&!colDropdownRef.current.contains(e.target as Node))setColDropdownOpen(false)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
-  useEffect(()=>{loadCols();loadChats()},[]);
+  useEffect(()=>{loadCols();loadChats();loadIncompleteJobs();},[]);
 
   useEffect(()=>{
     const offT=Events.On("chat:token",(e:any)=>{setStatusMsgs([]);const sid=e.data.sessionId;setChats(p=>p.map(c=>{if(c.id!==sid)return c;const ms=[...c.messages];const last=ms[ms.length-1];if(last&&last.sender==="ai"){ms[ms.length-1]={...last,text:last.text+e.data.token}}else{ms.push({id:crypto.randomUUID(),sender:"ai",text:e.data.token})}return{...c,messages:ms}}))});
@@ -129,46 +152,67 @@ export default function App() {
     return()=>{offT();offD();offStatus();offSources()};
   },[]);
 
-  // Track file processing state globally — single listener for both counter and toast
+  // Track durable ingest lifecycle via backend events
   const ingestCountRef = useRef({ success: 0, error: 0, total: 0 });
   useEffect(()=>{
     const off = Events.On("ingest:progress", (e: any) => {
       if (!e.data) return;
+      const phase = e.data.phase || "";
       const step = e.data.step;
-      if (step === "chunking") {
-        processingRef.current += 1;
-        ingestCountRef.current.total += 1;
+      if (phase === "staging" || phase === "embedding" || step === "staging" || step === "embedding" || step === "chunked") {
         setIsIngesting(true);
-      } else if (step === "complete") {
-        processingRef.current = Math.max(0, processingRef.current - 1);
+      }
+      if (step === "doc_ready") {
         ingestCountRef.current.success += 1;
-        if (processingRef.current === 0) setIsIngesting(false);
+      }
+      if (step === "doc_failed") {
+        ingestCountRef.current.error += 1;
+      }
+      if (phase === "staging_done" && typeof e.data.staged === "number") {
+        ingestCountRef.current.total = e.data.staged;
+      }
+      if (phase === "batch_done" || step === "complete") {
+        setIsIngesting(false);
+        loadIncompleteJobs();
       }
     });
     return () => off();
-  },[]);
+  },[loadIncompleteJobs]);
 
   // Auto-refresh collections and show toast when processing finishes
   const prevIngesting = useRef(false);
   useEffect(() => {
     if (prevIngesting.current && !isIngesting) {
       const { success, error, total } = ingestCountRef.current;
-      if (total > 0) {
+      if (total > 0 || success > 0 || error > 0) {
         if (error > 0) {
-          addToast("info", `Ingestion complete: ${success}/${total} documents processed${error > 0 ? `, ${error} failed` : ''}`);
-        } else {
-          addToast("success", `Ingestion complete: All ${total} documents processed successfully`);
+          addToast("info", `Ingestion complete: ${success} ready${error > 0 ? `, ${error} failed` : ""}`);
+        } else if (success > 0) {
+          addToast("success", `Ingestion complete: ${success} document${success > 1 ? "s" : ""} ready`);
         }
       }
       ingestCountRef.current = { success: 0, error: 0, total: 0 };
       loadCols();
       loadDocs(activeColId);
+      loadIncompleteJobs();
     }
     prevIngesting.current = isIngesting;
   }, [isIngesting]);
 
+  // Prompt once on startup if incomplete jobs exist
+  const promptedResume = useRef(false);
+  useEffect(() => {
+    if (promptedResume.current || incompleteJobs.length === 0) return;
+    promptedResume.current = true;
+    addToast("info", `${incompleteJobs.length} incomplete document(s) found. Open Upload to resume or discard.`);
+  }, [incompleteJobs, addToast]);
+
   const loadCols=async()=>{try{const c:any=await GetCollections();if(c?.length){setCols(c);setActiveColId(c[0].id)}}catch(e){console.error(e)}};
-  const loadDocs=async(colId:number)=>{try{const d:any=await GetDocumentsByCollection(colId);setIdocs(d?.length?d:[])}catch(e){setIdocs([])}};
+  const loadDocs=async(colId:number)=>{try{const d:any=await GetDocumentsByCollection(colId);setIdocs((d||[]).map((x:any)=>({
+    id:x.id,collectionId:x.collectionId,filename:x.filename,hash:x.hash||"",content:x.content||"",createdAt:x.createdAt,
+    chunkCount:x.chunkCount||0,status:x.status||"ready",expectedChunks:x.expectedChunks||0,batchId:x.batchId||"",
+    errorMessage:x.errorMessage||"",updatedAt:x.updatedAt||0,
+  })))}catch(e){setIdocs([])}};
   useEffect(()=>{if(tab==="cols"){loadDocs(activeColId);setSelectedDocId(null);setSelectedDocContent("")}},[activeColId,tab]);
 
   const loadChats=async()=>{
@@ -208,43 +252,87 @@ export default function App() {
     try{await SendMessage(tid,activeColId,msg)}catch(e){console.error(e);setGen(false);setStatusMsgs([])}
   };
 
-  // File upload via modal â€” does NOT update App state during processing.
-  // Only returns result strings. Collections refresh on modal close.
-  const processFile = useCallback(async (file: File, replace: boolean): Promise<string> => {
+  // Two-phase batch: extract all files first, then embed (durable on backend).
+  const handleStartBatch = useCallback(async (items: { file: File; replace: boolean }[]) => {
+    setIsIngesting(true);
     try {
-      const reader = new FileReader();
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        reader.onload = () => { const r = reader.result as string; resolve(r.split(",")[1]); };
-        reader.onerror = reject; reader.readAsDataURL(file);
-      });
-      const r: any = await UploadFile(file.name, dataUrl, activeColId, replace);
-      const status = r?.status ?? r?.Status;
-      const message = r?.message ?? r?.Message;
-      if (status === "duplicate" && !replace) {
-        return "duplicate";
-      } else if (status === "success" || status === "replaced") {
-        return status;
-      } else {
-        return message || `Failed to process "${file.name}"`;
+      const payloads: { filename: string; base64Data: string; textContent: string; replace: boolean }[] = [];
+      for (const item of items) {
+        const reader = new FileReader();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => { const r = reader.result as string; resolve(r.split(",")[1] || ""); };
+          reader.onerror = reject;
+          reader.readAsDataURL(item.file);
+        });
+        payloads.push({
+          filename: item.file.name,
+          base64Data: dataUrl,
+          textContent: "",
+          replace: item.replace,
+        });
       }
-    } catch (e: any) {
-      return getErrMsg(e);
+      return await StartIngestBatch(activeColId, payloads as any);
+    } finally {
+      setIsIngesting(false);
+      loadCols();
+      loadDocs(activeColId);
+      loadIncompleteJobs();
     }
-  }, [activeColId]);
+  }, [activeColId, loadIncompleteJobs]);
 
-  // Paste text via modal
+  // Paste text via modal (uses durable pipeline)
   const handleIngestPaste = useCallback(async (filename: string, content: string): Promise<string> => {
     try {
       let fn = filename.trim();
       if (fn.length < 3) return "Filename must be at least 3 characters";
       fn = fn.replace(/[^a-zA-Z0-9.-]/g, "_");
       if (!fn.includes(".")) fn += ".txt";
+      setIsIngesting(true);
       await IngestFile(activeColId, fn, content);
       return "success";
     } catch (e: any) {
       return getErrMsg(e);
+    } finally {
+      setIsIngesting(false);
+      loadIncompleteJobs();
     }
-  }, [activeColId]);
+  }, [activeColId, loadIncompleteJobs]);
+
+  const handleResumeJobs = useCallback(async () => {
+    setIsIngesting(true);
+    try {
+      await ResumeIngest();
+    } finally {
+      setIsIngesting(false);
+      loadCols();
+      loadDocs(activeColId);
+      loadIncompleteJobs();
+    }
+  }, [activeColId, loadIncompleteJobs]);
+
+  const handleDiscardJob = useCallback(async (docId: number) => {
+    try {
+      await DiscardIngestJob(docId);
+      await loadIncompleteJobs();
+      loadDocs(activeColId);
+      loadCols();
+      addToast("info", "Discarded incomplete document");
+    } catch (e: any) {
+      addToast("error", getErrMsg(e));
+    }
+  }, [activeColId, loadIncompleteJobs, addToast]);
+
+  const handleDiscardAllJobs = useCallback(async () => {
+    try {
+      const n: any = await DiscardAllIncomplete();
+      await loadIncompleteJobs();
+      loadDocs(activeColId);
+      loadCols();
+      addToast("info", `Discarded ${n ?? 0} incomplete document(s)`);
+    } catch (e: any) {
+      addToast("error", getErrMsg(e));
+    }
+  }, [activeColId, loadIncompleteJobs, addToast]);
 
   const handleStopGeneration = useCallback(async () => {
     try { await CancelGeneration(activeChatId); } catch (e) { /* ignore */ }
@@ -326,7 +414,20 @@ export default function App() {
         </div>); })()}
 
       {/* Upload Modal */}
-      <FileUploadModal open={showUploadModal} onClose={closeUploadModal} collectionId={activeColId} collectionName={activeCol?.name || "Unknown"} onUpload={processFile} onIngestPaste={handleIngestPaste} theme={theme} />
+      <FileUploadModal
+        open={showUploadModal}
+        onClose={closeUploadModal}
+        collectionId={activeColId}
+        collectionName={activeCol?.name || "Unknown"}
+        onStartBatch={handleStartBatch}
+        onIngestPaste={handleIngestPaste}
+        incompleteJobs={incompleteJobs}
+        onResumeJobs={handleResumeJobs}
+        onDiscardJob={handleDiscardJob}
+        onDiscardAllJobs={handleDiscardAllJobs}
+        isIngesting={isIngesting}
+        theme={theme}
+      />
 
       {/* Rename Modal */}
       <Modal open={renameModal.open} onClose={() => setRenameModal({ open: false, chatId: 0, value: "" })} title="Rename Chat" theme={theme}>
