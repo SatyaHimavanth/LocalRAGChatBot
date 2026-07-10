@@ -1,6 +1,6 @@
 ﻿import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Events } from "@wailsio/runtime";
-import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, GetDocumentContent, GetSessionSources, CancelGeneration, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardIngestJob, DiscardAllIncomplete } from "../bindings/changeme/internal/app/chatservice";
+import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, GetDocumentContent, GetSessionSources, CancelGeneration, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete } from "../bindings/changeme/internal/app/chatservice";
 import { Message, Chat, Collection, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob } from "./types";
 import { I } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
@@ -49,6 +49,7 @@ export default function App() {
   const [showUploadModal,setShowUploadModal]=useState(false);
   const [incompleteJobs,setIncompleteJobs]=useState<IncompleteJob[]>([]);
   const closeUploadModal = () => { setShowUploadModal(false); loadCols(); loadDocs(activeColId); loadIncompleteJobs(); };
+  const [showResumeModal, setShowResumeModal] = useState(false);
 
   const [toasts,setToasts]=useState<ToastMsg[]>([]);
   const addToast=useCallback((type:"success"|"error"|"info",message:string)=>{const id=crypto.randomUUID();setToasts(p=>[...p,{id,type,message}]);setTimeout(()=>setToasts(p=>p.filter(t=>t.id!==id)),5000)},[]);
@@ -72,6 +73,7 @@ export default function App() {
       })) as IncompleteJob[];
       setIncompleteJobs(list);
       if (list.length > 0) setIsIngesting(false);
+      return list;
     } catch (e) {
       console.error("Failed to load incomplete jobs:", e);
     }
@@ -88,7 +90,7 @@ export default function App() {
 
   useEffect(()=>{const h=(e:MouseEvent)=>{if(ctxRef.current&&!ctxRef.current.contains(e.target as Node))setCtxMenuChatId(null)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
   useEffect(()=>{const h=(e:MouseEvent)=>{if(colDropdownRef.current&&!colDropdownRef.current.contains(e.target as Node))setColDropdownOpen(false)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
-  useEffect(()=>{loadCols();loadChats();loadIncompleteJobs();},[]);
+  useEffect(()=>{(async ()=>{ await loadCols(); await loadChats(); const list = await loadIncompleteJobs(); if (list && list.length > 0) setShowResumeModal(true); })();},[]);
 
   useEffect(()=>{
     const offT=Events.On("chat:token",(e:any)=>{setStatusMsgs([]);const sid=e.data.sessionId;setChats(p=>p.map(c=>{if(c.id!==sid)return c;const ms=[...c.messages];const last=ms[ms.length-1];if(last&&last.sender==="ai"){ms[ms.length-1]={...last,text:last.text+e.data.token}}else{ms.push({id:crypto.randomUUID(),sender:"ai",text:e.data.token})}return{...c,messages:ms}}))});
@@ -164,9 +166,13 @@ export default function App() {
       }
       if (step === "doc_ready") {
         ingestCountRef.current.success += 1;
+        const fn = e.data.filename || "";
+        if (fn) addToast("success", `✓ ${fn} ready`);
       }
       if (step === "doc_failed") {
         ingestCountRef.current.error += 1;
+        const fn = e.data.filename || "";
+        if (fn) addToast("error", `✗ ${fn} failed`);
       }
       if (phase === "staging_done" && typeof e.data.staged === "number") {
         ingestCountRef.current.total = e.data.staged;
@@ -199,13 +205,7 @@ export default function App() {
     prevIngesting.current = isIngesting;
   }, [isIngesting]);
 
-  // Prompt once on startup if incomplete jobs exist
-  const promptedResume = useRef(false);
-  useEffect(() => {
-    if (promptedResume.current || incompleteJobs.length === 0) return;
-    promptedResume.current = true;
-    addToast("info", `${incompleteJobs.length} incomplete document(s) found. Open Upload to resume or discard.`);
-  }, [incompleteJobs, addToast]);
+  
 
   const loadCols=async()=>{try{const c:any=await GetCollections();if(c?.length){setCols(c);setActiveColId(c[0].id)}}catch(e){console.error(e)}};
   const loadDocs=async(colId:number)=>{try{const d:any=await GetDocumentsByCollection(colId);setIdocs((d||[]).map((x:any)=>({
@@ -299,6 +299,7 @@ export default function App() {
   }, [activeColId, loadIncompleteJobs]);
 
   const handleResumeJobs = useCallback(async () => {
+    setShowUploadModal(true);
     setIsIngesting(true);
     try {
       await ResumeIngest();
@@ -309,18 +310,6 @@ export default function App() {
       loadIncompleteJobs();
     }
   }, [activeColId, loadIncompleteJobs]);
-
-  const handleDiscardJob = useCallback(async (docId: number) => {
-    try {
-      await DiscardIngestJob(docId);
-      await loadIncompleteJobs();
-      loadDocs(activeColId);
-      loadCols();
-      addToast("info", "Discarded incomplete document");
-    } catch (e: any) {
-      addToast("error", getErrMsg(e));
-    }
-  }, [activeColId, loadIncompleteJobs, addToast]);
 
   const handleDiscardAllJobs = useCallback(async () => {
     try {
@@ -421,11 +410,8 @@ export default function App() {
         collectionName={activeCol?.name || "Unknown"}
         onStartBatch={handleStartBatch}
         onIngestPaste={handleIngestPaste}
-        incompleteJobs={incompleteJobs}
-        onResumeJobs={handleResumeJobs}
-        onDiscardJob={handleDiscardJob}
-        onDiscardAllJobs={handleDiscardAllJobs}
         isIngesting={isIngesting}
+        incompleteJobs={incompleteJobs}
         theme={theme}
       />
 
@@ -438,11 +424,28 @@ export default function App() {
         </div>
       </Modal>
 
+      {/* Resume Modal — force user to choose Resume or Discard */}
+      <ConfirmModal
+        open={showResumeModal}
+        title="Incomplete Documents"
+        message={`${incompleteJobs.length} document(s) were left incomplete when the app was last closed. Text was saved. Resume embedding or discard them.`}
+        detail={"Choose an action to continue."}
+        theme={theme}
+        leftLabel={isIngesting ? "Resuming..." : "Resume embedding"}
+        leftAction={async () => { setShowResumeModal(false); await handleResumeJobs(); }}
+        confirmLabel={"Discard all"}
+        onConfirm={async () => { await handleDiscardAllJobs(); setShowResumeModal(false); }}
+        onCancel={() => { /* fallback: do nothing */ }}
+        disableBackdropClose={true}
+      />
+
       <ConfirmModal open={confirm.open} title={confirm.title} message={confirm.message} detail={confirm.detail} confirmLabel={confirm.confirmLabel} onConfirm={confirm.onConfirm} onCancel={() => setConfirm({ open: false, title: "", message: "", detail: "", confirmLabel: "", onConfirm: () => {} })} theme={theme} />
       <Toast toasts={toasts} onDismiss={dismissToast} theme={theme} />
     </div>
   </>);
 }
+
+// (btnStyleSmall removed because it's unused.)
 
 function ctxMenuItem(label: string, icon: React.ReactNode, onClick: () => void, T: any, isDanger?: boolean) {
   return (

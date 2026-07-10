@@ -157,7 +157,6 @@ func main() {
 		}
 		e.Cancel()
 
-		allowClose := false
 		dialog := app.Dialog.Question().
 			SetTitle("Ingestion in progress").
 			SetMessage("Documents are still being prepared or embedded.\n\nStaged text is saved. You can resume embedding after restart.\n\nClose anyway?")
@@ -166,16 +165,22 @@ func main() {
 		dialog.SetDefaultButton(stayBtn)
 		dialog.SetCancelButton(stayBtn)
 		closeBtn.OnClick(func() {
-			allowClose = true
+			// Mark force-close immediately so the next Close() call isn't intercepted.
+			forceClose.Store(true)
+			go func() {
+				// Attempt graceful cancel in background while allowing the window to close.
+				chatService.CancelIngest()
+				chatService.WaitIngestIdle(5000)
+			}()
+			// Trigger the close now; hook will see forceClose and allow it.
+			win.Close()
+			// Fallback: if window doesn't close (platform edge cases), force process exit shortly.
+			go func() {
+				time.Sleep(1500 * time.Millisecond)
+				os.Exit(0)
+			}()
 		})
 		dialog.Show()
-
-		if allowClose {
-			chatService.CancelIngest()
-			chatService.WaitIngestIdle(5000)
-			forceClose.Store(true)
-			win.Close()
-		}
 	})
 
 	go func() {

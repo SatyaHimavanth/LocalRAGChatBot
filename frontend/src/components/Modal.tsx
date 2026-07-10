@@ -23,13 +23,18 @@ export function Modal({open,onClose,title,children,wide,theme}:{open:boolean;onC
   );
 }
 
-export function ConfirmModal({open,title,message,detail,confirmLabel,onConfirm,onCancel,theme}:{
-  open:boolean;title:string;message:string;detail:string;confirmLabel:string;onConfirm:()=>void;onCancel:()=>void;theme?:Theme
+export function ConfirmModal({open,title,message,detail,confirmLabel,onConfirm,onCancel,theme, leftLabel, leftAction, disableBackdropClose}:{
+  open:boolean;title:string;message:string;detail:string;confirmLabel:string;onConfirm:()=>void;onCancel:()=>void;theme?:Theme;
+  leftLabel?:string; leftAction?:()=>void; disableBackdropClose?:boolean
 }){
   const T = theme ? themeVars[theme] : null;
   if(!open)return null;
+  const handleBackdrop = () => {
+    if (disableBackdropClose) return;
+    onCancel();
+  };
   return(
-    <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.6)",backdropFilter:"blur(4px)"}} onClick={onCancel}>
+    <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.6)",backdropFilter:"blur(4px)"}} onClick={handleBackdrop}>
       <div onClick={e=>e.stopPropagation()} style={{
         background: T ? T.bg2 : "#1e1f36",
         border: T ? "1px solid "+T.border : "1px solid rgba(255,255,255,0.1)",
@@ -43,7 +48,11 @@ export function ConfirmModal({open,title,message,detail,confirmLabel,onConfirm,o
         <div style={{fontSize:13,color:T?T.text2:"rgba(255,255,255,0.7)",lineHeight:1.5,marginBottom:8}}>{message}</div>
         <div style={{fontSize:12,color:"rgba(239,68,68,0.6)",lineHeight:1.4,marginBottom:20,padding:"8px 10px",background:"rgba(239,68,68,0.08)",borderRadius:6}}>{detail}</div>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-          <button onClick={onCancel} style={{padding:"8px 16px",borderRadius:8,border:T?"1px solid "+T.border:"1px solid rgba(255,255,255,0.1)",cursor:"pointer",fontSize:13,color:T?T.text2:"rgba(255,255,255,0.7)",background:"transparent"}}>Cancel</button>
+          {leftLabel && leftAction ? (
+            <button onClick={leftAction} style={{padding:"8px 16px",borderRadius:8,border:T?"1px solid "+T.border:"1px solid rgba(255,255,255,0.1)",cursor:"pointer",fontSize:13,color:T?T.text2:"rgba(255,255,255,0.7)",background:"transparent"}}>{leftLabel}</button>
+          ) : (
+            <button onClick={onCancel} style={{padding:"8px 16px",borderRadius:8,border:T?"1px solid "+T.border:"1px solid rgba(255,255,255,0.1)",cursor:"pointer",fontSize:13,color:T?T.text2:"rgba(255,255,255,0.7)",background:"transparent"}}>Cancel</button>
+          )}
           <button onClick={onConfirm} style={{padding:"8px 16px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,color:"#fff",background:"rgba(239,68,68,0.8)"}}>{confirmLabel}</button>
         </div>
       </div>

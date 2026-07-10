@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, ChangeEvent } from "react";
+﻿import { useState, useRef, useEffect, ChangeEvent } from "react";
 import { Events } from "@wailsio/runtime";
-import { FileUploadItem, IncompleteJob, Theme, themeVars } from "../types";
+import { FileUploadItem, Theme, themeVars, IncompleteJob } from "../types";
 import { Modal } from "./Modal";
 import { I } from "./Icons";
 
@@ -9,22 +9,45 @@ interface FileUploadModalProps {
   onClose: () => void;
   collectionId: number;
   collectionName: string;
-  /** Stage+embed a batch of browser files (two-phase on backend). */
   onStartBatch: (files: { file: File; replace: boolean }[]) => Promise<any>;
   onIngestPaste?: (filename: string, content: string) => Promise<string>;
-  incompleteJobs: IncompleteJob[];
-  onResumeJobs: () => Promise<void>;
-  onDiscardJob: (docId: number) => Promise<void>;
-  onDiscardAllJobs: () => Promise<void>;
   isIngesting: boolean;
+  incompleteJobs: IncompleteJob[];
   theme: Theme;
 }
+
+const mapIncompleteJobToFile = (job: IncompleteJob): FileUploadItem => {
+  const status = (job.status || "queued").toLowerCase();
+  const validStatus = ["pending", "processing", "duplicate", "replaced", "success", "error", "queued", "embedding", "failed", "staged"].includes(status)
+    ? status as FileUploadItem["status"]
+    : "processing";
+  const progressMsg = validStatus === "error"
+    ? job.errorMessage || "Failed"
+    : validStatus === "success"
+      ? "✓ Done"
+      : validStatus === "queued"
+        ? "Queued"
+        : validStatus === "embedding"
+          ? "Embedding…"
+          : validStatus === "staged"
+            ? "Staged"
+            : "Processing…";
+
+  return {
+    id: `job-${job.docId}`,
+    filename: job.filename,
+    status: validStatus,
+    docId: job.docId,
+    progressPct: job.progressPct ?? 0,
+    progressMsg,
+    message: job.errorMessage || undefined,
+  };
+};
 
 export function FileUploadModal({
   open, onClose, collectionId, collectionName,
   onStartBatch, onIngestPaste,
-  incompleteJobs, onResumeJobs, onDiscardJob, onDiscardAllJobs,
-  isIngesting, theme,
+  isIngesting, incompleteJobs, theme,
 }: FileUploadModalProps) {
   const [mode, setMode] = useState<"upload" | "paste">("upload");
   const [files, setFiles] = useState<FileUploadItem[]>([]);
@@ -35,14 +58,15 @@ export function FileUploadModal({
   const [pasteStatus, setPasteStatus] = useState("");
   const [pastePct, setPastePct] = useState(0);
   const [pasteLabel, setPasteLabel] = useState("");
-  const [phaseLabel, setPhaseLabel] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const T = themeVars[theme];
 
-  const jobsForCollection = incompleteJobs.filter(j => j.collectionId === collectionId);
+  const isActiveFileStatus = (status: FileUploadItem["status"]): status is "processing" | "queued" | "embedding" | "staged" =>
+    status === "processing" || status === "queued" || status === "embedding" || status === "staged";
 
   useEffect(() => {
-    if (!uploading && !pasting && !isIngesting) return;
+    const hasProcessingFiles = files.some(f => isActiveFileStatus(f.status));
+    if (!uploading && !pasting && !isIngesting && !hasProcessingFiles) return;
     const off = Events.On("ingest:progress", (e: any) => {
       if (!e.data) return;
       const phase = e.data.phase || "";
@@ -52,36 +76,37 @@ export function FileUploadModal({
       const filename = e.data.filename || "";
 
       if (phase === "staging" || step === "staging") {
-        setPhaseLabel(label || `Extracting text…`);
         if (filename) {
           setFiles(prev => prev.map(f =>
             f.filename === filename || f.file?.name === filename
-              ? { ...f, status: "processing", progressMsg: label, progressPct: pct }
+              ? { ...f, status: "processing", progressMsg: "Extracting...", progressPct: 0 }
               : f
           ));
         }
       } else if (phase === "staging_done") {
-        setPhaseLabel(label || "Staging complete");
-        setFiles(prev => prev.map(f =>
-          f.status === "processing" || f.status === "pending"
-            ? f
-            : f
-        ));
-      } else if (phase === "embedding" || step === "embedding" || step === "chunked") {
-        setPhaseLabel(label || "Embedding…");
+      } else if (phase === "embedding" || step === "embedding") {
+        const detail = e.data.detail || "";
+        const progressTxt = detail ? `${detail}` : (label || "Embedding...");
         if (filename || e.data.docId) {
           setFiles(prev => prev.map(f => {
-            const match = (filename && (f.filename === filename || f.file?.name === filename))
-              || (e.data.docId && f.docId === e.data.docId);
-            if (!match && filename) {
-              // update the processing row by name if docId not yet known
-              return f;
-            }
             if (filename && (f.filename === filename || f.file?.name === filename)) {
-              return { ...f, status: "processing", progressMsg: label, progressPct: pct, docId: e.data.docId || f.docId };
+              return { ...f, status: "processing", progressMsg: progressTxt, progressPct: pct, docId: e.data.docId || f.docId };
             }
             if (e.data.docId && f.docId === e.data.docId) {
-              return { ...f, status: "processing", progressMsg: label, progressPct: pct };
+              return { ...f, status: "processing", progressMsg: progressTxt, progressPct: pct };
+            }
+            return f;
+          }));
+        }
+      } else if (step === "chunked") {
+        // Don't reset progress — just update the label
+        if (filename || e.data.docId) {
+          setFiles(prev => prev.map(f => {
+            if (filename && (f.filename === filename || f.file?.name === filename)) {
+              return { ...f, status: "processing", docId: e.data.docId || f.docId };
+            }
+            if (e.data.docId && f.docId === e.data.docId) {
+              return { ...f, status: "processing" };
             }
             return f;
           }));
@@ -105,7 +130,6 @@ export function FileUploadModal({
           }));
         }
       } else if (phase === "batch_done" || step === "complete") {
-        setPhaseLabel(label || "Done");
       }
 
       if (mode === "paste" && pasting) {
@@ -115,16 +139,30 @@ export function FileUploadModal({
       }
     });
     return () => off();
-  }, [uploading, pasting, isIngesting, mode]);
+  }, [files, uploading, pasting, isIngesting, mode]);
+
+  useEffect(() => {
+    if (!open) return;
+    setFiles(prev => {
+      const next = prev.map(f => {
+        if (!f.docId) return f;
+        const job = incompleteJobs.find(j => j.docId === f.docId);
+        return job ? { ...f, ...mapIncompleteJobToFile(job), file: f.file } : f;
+      });
+      const existingIds = new Set(next.map(f => f.docId ? `job-${f.docId}` : f.id));
+      const jobs = incompleteJobs.map(mapIncompleteJobToFile).filter(job => !existingIds.has(job.id));
+      return jobs.length ? [...next, ...jobs] : next;
+    });
+  }, [open, incompleteJobs]);
 
   useEffect(() => {
     if (open && !uploading && !pasting) {
       if (files.length === 0) {
         setPasteFilename(""); setPasteContent(""); setPasteStatus("");
-        setPastePct(0); setPasteLabel(""); setPhaseLabel("");
+        setPastePct(0); setPasteLabel("");
       }
     }
-  }, [open]);
+  }, [open, files, uploading, pasting]);
 
   const handleSelect = (e: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(e.target.files || []);
@@ -145,7 +183,6 @@ export function FileUploadModal({
     const pending = files.filter(f => f.status === "pending" && f.file);
     if (pending.length === 0 || uploading) return;
     setUploading(true);
-    setPhaseLabel("Extracting text from all files…");
     setFiles(p => p.map(f => f.status === "pending" ? { ...f, status: "processing", progressMsg: "Waiting to stage…", progressPct: 0 } : f));
     try {
       const result: any = await onStartBatch(pending.map(f => ({ file: f.file!, replace: false })));
@@ -181,7 +218,6 @@ export function FileUploadModal({
       ));
     }
     setUploading(false);
-    setPhaseLabel("");
   };
 
   const removeFile = (id: string) => setFiles(p => p.filter(f => f.id !== id));
@@ -209,59 +245,33 @@ export function FileUploadModal({
     setPasting(false);
   };
 
-  const handleResume = async () => {
-    setUploading(true);
-    setPhaseLabel("Resuming embedding…");
-    try {
-      await onResumeJobs();
-    } catch (e: any) {
-      setPhaseLabel(e?.message || "Resume failed");
-    }
-    setUploading(false);
-    setPhaseLabel("");
-  };
-
   const B = { background: T.bg2, border: "1px solid " + T.border, color: T.text, fontSize: 13, outline: "none" as const, width: "100%", padding: "10px 14px", borderRadius: 8 };
+  const hasActiveFiles = files.some(f => isActiveFileStatus(f.status));
+  const isProcessing = uploading || pasting || isIngesting || hasActiveFiles;
   const busy = uploading || pasting || isIngesting;
 
+  const handleClose = () => {
+    // Preserve modal state only while documents are still actively processing.
+    if (isProcessing) {
+      onClose();
+      return;
+    }
+    setFiles([]);
+    setUploading(false);
+    setPasting(false);
+    setPasteFilename("");
+    setPasteContent("");
+    setPasteStatus("");
+    setPastePct(0);
+    setPasteLabel("");
+    onClose();
+  };
+
   return (
-    <Modal open={open} onClose={onClose} title="Add Document" wide theme={theme}>
+    <Modal open={open} onClose={handleClose} title="Add Document" wide theme={theme}>
       <div style={{ fontSize: 12, color: T.text3, marginBottom: 12 }}>
         Target: <strong style={{ color: T.text }}>{collectionName}</strong>
       </div>
-
-      {/* Incomplete jobs from previous sessions */}
-      {jobsForCollection.length > 0 && (
-        <div style={{ marginBottom: 14, padding: 12, borderRadius: 8, background: "rgba(234,179,8,0.08)", border: "1px solid rgba(234,179,8,0.25)" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(234,179,8,0.95)", marginBottom: 6 }}>
-            Incomplete ingest jobs ({jobsForCollection.length})
-          </div>
-          <div style={{ fontSize: 11, color: T.text3, marginBottom: 8 }}>
-            Text was saved before exit. Resume embedding or discard.
-          </div>
-          <div style={{ maxHeight: 120, overflowY: "auto", marginBottom: 8 }}>
-            {jobsForCollection.map(j => (
-              <div key={j.docId} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, padding: "4px 0", borderBottom: "1px solid " + T.border }}>
-                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: T.text }}>{j.filename}</span>
-                <span style={{ color: T.text3, flexShrink: 0 }}>{j.status} · {j.chunkCount}/{j.expectedChunks || "?"}</span>
-                <button
-                  onClick={() => onDiscardJob(j.docId)}
-                  disabled={busy}
-                  style={{ background: "none", border: "none", cursor: busy ? "default" : "pointer", color: "rgba(239,68,68,0.7)", fontSize: 10, padding: 2 }}
-                >Discard</button>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={handleResume} disabled={busy} style={{ ...btnStyle, flex: 1, opacity: busy ? 0.5 : 1, minHeight: 32, padding: "6px" }}>
-              Resume embedding
-            </button>
-            <button onClick={onDiscardAllJobs} disabled={busy} style={{ ...btnStyle, flex: 1, minHeight: 32, padding: "6px", background: "rgba(239,68,68,0.7)", opacity: busy ? 0.5 : 1 }}>
-              Discard all
-            </button>
-          </div>
-        </div>
-      )}
 
       <div style={{ display: "flex", gap: 4, marginBottom: 12, background: T.bg2, borderRadius: 8, padding: 3 }}>
         {(["upload", "paste"] as const).map(m => (
@@ -309,7 +319,7 @@ export function FileUploadModal({
                         <div style={{ flex: 1, height: 4, borderRadius: 2, background: T.border, overflow: "hidden" }}>
                           <div style={{ width: Math.max(2, Math.min(100, f.progressPct || 0)) + "%", height: "100%", borderRadius: 2, background: "rgba(99,102,241,0.7)", transition: "width 0.3s ease" }} />
                         </div>
-                        <span style={{ flexShrink: 0, width: 140, textAlign: "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.progressMsg || ""}</span>
+                        <span style={{ flexShrink: 0, width: 90, textAlign: "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.progressMsg || ""}</span>
                       </>
                     ) : f.status === "success" || f.status === "replaced" ? (
                       <span style={{ color: "rgba(34,197,94,0.8)" }}>{f.progressMsg || "✓ Ingested successfully"}</span>
@@ -330,13 +340,13 @@ export function FileUploadModal({
             )}
             {busy && mode === "upload" && (
               <div style={{ ...btnStyle, opacity: 0.7, cursor: "default" }}>
-                <I.Spinner /> {phaseLabel || "Processing…"}
+                <I.Spinner /> Processing
               </div>
             )}
             {hasCompleted && (
               <>
-                {successCount > 0 && <div style={{ fontSize: 12, color: "rgba(34,197,94,0.8)", textAlign: "center" }}>✓ {successCount} succeeded{errorCount > 0 ? `, ${errorCount} failed` : ""}</div>}
-                <button onClick={onClose} style={{ ...btnStyle, background: errorCount === 0 ? "rgba(34,197,94,0.8)" : "rgba(99,102,241,0.8)" }}>
+                  {successCount > 0 && <div style={{ fontSize: 12, color: "rgba(34,197,94,0.8)", textAlign: "center" }}>✓ {successCount} succeeded{errorCount > 0 ? `, ${errorCount} failed` : ""}</div>}
+                  <button onClick={handleClose} style={{ ...btnStyle, background: errorCount === 0 ? "rgba(34,197,94,0.8)" : "rgba(99,102,241,0.8)" }}>
                   {errorCount === 0 ? "✓ Done" : "Close"}
                 </button>
               </>
@@ -370,7 +380,7 @@ export function FileUploadModal({
           {pasteStatus && !pasting && (
             <div style={{ fontSize: 12, padding: "8px", borderRadius: 6, background: pasteStatus.startsWith("✓") ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)", color: pasteStatus.startsWith("✓") ? "rgba(34,197,94,0.9)" : "rgba(239,68,68,0.9)", textAlign: "center" }}>
               {pasteStatus}
-              {pasteStatus.startsWith("✓") && <button onClick={onClose} style={{ marginLeft: 8, padding: "2px 10px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 11, color: "#fff", background: "rgba(34,197,94,0.8)" }}>Close</button>}
+              {pasteStatus.startsWith("✓") && <button onClick={handleClose} style={{ marginLeft: 8, padding: "2px 10px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 11, color: "#fff", background: "rgba(34,197,94,0.8)" }}>Close</button>}
             </div>
           )}
         </div>
