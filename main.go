@@ -152,34 +152,28 @@ func main() {
 
 	// Warn when closing during ingest; staged text is durable and can resume later.
 	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		if forceClose.Load() || !chatService.IsIngesting() {
+
+		if !chatService.IsIngesting() {
 			return
 		}
-		e.Cancel()
 
 		dialog := app.Dialog.Question().
 			SetTitle("Ingestion in progress").
-			SetMessage("Documents are still being prepared or embedded.\n\nStaged text is saved. You can resume embedding after restart.\n\nClose anyway?")
-		stayBtn := dialog.AddButton("Stay")
-		closeBtn := dialog.AddButton("Close")
-		dialog.SetDefaultButton(stayBtn)
-		dialog.SetCancelButton(stayBtn)
-		closeBtn.OnClick(func() {
-			// Mark force-close immediately so the next Close() call isn't intercepted.
-			forceClose.Store(true)
-			go func() {
-				// Attempt graceful cancel in background while allowing the window to close.
-				chatService.CancelIngest()
-				chatService.WaitIngestIdle(5000)
-			}()
-			// Trigger the close now; hook will see forceClose and allow it.
-			win.Close()
-			// Fallback: if window doesn't close (platform edge cases), force process exit shortly.
-			go func() {
-				time.Sleep(1500 * time.Millisecond)
-				os.Exit(0)
-			}()
+			SetMessage("Close anyway?")
+
+		stay := dialog.AddButton("Stay")
+		close := dialog.AddButton("Close")
+
+		stay.OnClick(func() {
+			e.Cancel()
 		})
+
+		close.OnClick(func() {
+			forceClose.Store(true)
+			chatService.CancelIngest()
+			// NOTHING ELSE
+		})
+
 		dialog.Show()
 	})
 

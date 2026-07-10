@@ -144,14 +144,10 @@ export function FileUploadModal({
   useEffect(() => {
     if (!open) return;
     setFiles(prev => {
-      const next = prev.map(f => {
-        if (!f.docId) return f;
-        const job = incompleteJobs.find(j => j.docId === f.docId);
-        return job ? { ...f, ...mapIncompleteJobToFile(job), file: f.file } : f;
-      });
-      const existingIds = new Set(next.map(f => f.docId ? `job-${f.docId}` : f.id));
+      const existingIds = new Set(prev.map(f => f.docId ? `job-${f.docId}` : f.id));
       const jobs = incompleteJobs.map(mapIncompleteJobToFile).filter(job => !existingIds.has(job.id));
-      return jobs.length ? [...next, ...jobs] : next;
+      if (jobs.length === 0) return prev;
+      return [...prev, ...jobs];
     });
   }, [open, incompleteJobs]);
 
