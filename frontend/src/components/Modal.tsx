@@ -17,7 +17,7 @@ export function Modal({open,onClose,title,children,wide,theme}:{open:boolean;onC
           <div style={{fontSize:16,fontWeight:600,color:T?T.text:"rgba(255,255,255,0.9)"}}>{title}</div>
           <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",color:T?T.text3:"rgba(255,255,255,0.3)",padding:2}}><I.X/></button>
         </div>
-        <div style={{flex:1,overflowY:"auto"}}>{children}</div>
+        <div style={{flex:1,minHeight:0,overflowY:"auto"}}>{children}</div>
       </div>
     </div>
   );
