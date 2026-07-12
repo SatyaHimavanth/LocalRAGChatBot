@@ -34,9 +34,8 @@ const (
 
 	// Max response tokens â€” generous enough for complete answers,
 	// safe enough to prevent runaway generation / OOM
+	maxResponseTokens = 1024
 )
-
-var maxResponseTokens int = 1024
 
 // getOptimalContextSize returns the best context window size based on
 // available system RAM. Override with CHAT_CONTEXT_SIZE env variable.
@@ -139,71 +138,6 @@ func (s *ChatService) ServiceStartup(ctx context.Context, options application.Se
 	)
 	s.CleanupIncompleteOnStartup()
 	return nil
-}
-
-// â”€â”€â”€ Greeting patterns for non-RAG responses â”€â”€â”€
-var greetingPatterns = []string{
-	"hi", "hello", "hey", "greetings", "howdy", "good morning", "good afternoon",
-	"good evening", "good night", "what's up", "sup", "yo", "how are you",
-	"how are you doing", "how do you do", "nice to meet you", "pleased to meet you",
-	"thanks", "thank you", "thank you so much", "thanks a lot", "appreciate it",
-	"bye", "goodbye", "see you", "see you later", "talk to you later", "cya",
-	"have a good day", "have a nice day", "take care",
-	"what can you do", "who are you", "what are you", "tell me about yourself",
-}
-
-func isGreeting(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	// Remove trailing punctuation for comparison
-	cleaned := strings.TrimRight(lower, ",.!? \t")
-	for _, p := range greetingPatterns {
-		if cleaned == p {
-			return true
-		}
-	}
-	return false
-}
-
-var greetingResponses = map[string]string{
-	"hi":              "Hi there! How can I help you today?",
-	"hello":           "Hello! Feel free to ask me anything or upload a document to get started.",
-	"hey":             "Hey! What can I do for you?",
-	"good morning":    "Good morning! Hope you're having a great day. How can I help?",
-	"good afternoon":  "Good afternoon! What can I assist you with?",
-	"good evening":    "Good evening! How can I help you today?",
-	"how are you":     "I'm doing well, thank you for asking! How can I assist you?",
-	"thanks":          "You're welcome! Let me know if you need anything else.",
-	"thank you":       "You're welcome! Happy to help.",
-	"bye":             "Goodbye! Feel free to come back anytime.",
-	"goodbye":         "Goodbye! Take care.",
-	"what can you do": "I'm a local RAG (Retrieval-Augmented Generation) assistant. You can upload documents to my collections and then ask me questions about them. I'll search through the content to find relevant answers!",
-	"who are you":     "I'm your local RAG assistant, running entirely on your machine with no external API calls. I can answer questions based on documents you upload to the collections.",
-}
-
-func getGreetingResponse(text string) string {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	// Exact match first
-	if resp, ok := greetingResponses[lower]; ok {
-		return resp
-	}
-	// Prefix match
-	for pattern, resp := range greetingResponses {
-		if strings.HasPrefix(lower, pattern+",") || strings.HasPrefix(lower, pattern+"!") || strings.HasPrefix(lower, pattern+".") {
-			return resp
-		}
-	}
-	return "Hello! How can I assist you today?"
-}
-
-func (s *ChatService) ensureAgent() *agent.Agent {
-	if s.agent == nil {
-		s.agent = agent.New(
-			agent.WithPersona(agent.DefaultPersona()),
-			agent.WithTools(agent.DefaultTools()),
-			agent.WithPlanner(agent.NewHeuristicPlanner()),
-		)
-	}
-	return s.agent
 }
 
 //  Collection management
@@ -381,25 +315,6 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		}
 	}
 
-	// â”€â”€ Check for greeting / small talk â”€â”€
-	if isGreeting(prompt) {
-		response := getGreetingResponse(prompt)
-		go func() {
-			s.emit("chat:thinking", map[string]any{"sessionId": sessionID})
-			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "responding", "label": "Responding..."})
-			time.Sleep(100 * time.Millisecond)
-			s.emit("chat:token", map[string]any{
-				"sessionId": sessionID,
-				"token":     response,
-			})
-			if s.DB != nil {
-				store.AddChatMessage(s.DB, sessionID, "assistant", response)
-			}
-			s.emit("chat:done", sessionID)
-		}()
-		return nil
-	}
-
 	// â”€â”€ Engine check â”€â”€
 	if s.Engine == nil {
 		s.emit("chat:thinking", map[string]any{"sessionId": sessionID})
@@ -536,8 +451,9 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		}
 		defer chatCtx.Close()
 
+		maxTokens := maxResponseTokens
 		deltas, errs := chatCtx.ChatStream(ctx, messages, llama.ChatOptions{
-			MaxTokens: &maxResponseTokens,
+			MaxTokens: &maxTokens,
 		})
 
 		var fullResponse strings.Builder
@@ -898,6 +814,17 @@ func (s *ChatService) searchCollection(query string, queryEmb []float32, collect
 		out = out[:20]
 	}
 	return out, nil
+}
+
+func (s *ChatService) ensureAgent() *agent.Agent {
+	if s.agent == nil {
+		s.agent = agent.New(
+			agent.WithPersona(agent.DefaultPersona()),
+			agent.WithTools(agent.DefaultTools()),
+			agent.WithPlanner(agent.NewHeuristicPlanner()),
+		)
+	}
+	return s.agent
 }
 
 func normalizeDistanceScore(score float64) float64 {

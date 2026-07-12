@@ -1,5 +1,5 @@
-export interface Message { id: string; sender: "user" | "ai" | "system"; text: string; cancelled?: boolean; }
-export interface Chat { id: number; title: string; messages: Message[]; createdAt: number; archived: boolean; pinned: boolean; messageSources?: Record<number, SourceRef[]>; }
+export interface Message { id: string; sender: "user" | "ai" | "system"; text: string; cancelled?: boolean; metadata?: AgentResult; }
+export interface Chat { id: number; title: string; messages: Message[]; createdAt: number; archived: boolean; pinned: boolean; messageSources?: Record<number, SourceRef[]>; agentPlan?: AgentPlan; lastAgentResult?: AgentResult; }
 export interface SourceRef { id?: number; refNumber: number; chunkId: number; content: string; filename: string; collectionId: number; collectionName: string; similarity: number; }
 export interface Collection { id: number; name: string; docCount: number; }
 export interface DocRecord {
@@ -19,6 +19,36 @@ export interface DocRecord {
 export interface SearchResult { content: string; score: number; searchType: string; collectionId: number; collectionName: string; filename: string; chunkId: number; }
 export interface IngestProgress { step: string; label: string; pct: number; detail: string; phase?: string; }
 export interface ToastMsg { id: string; type: "success"|"error"|"info"; message: string; }
+
+export type AgentIntent = "greeting" | "general" | "conversation" | "retrieval" | "follow_up" | "comparison" | "summarization" | "tool_call" | "unknown";
+export type AgentPhase = "thinking" | "planning" | "memory" | "retrieval" | "tool" | "generation" | "done";
+
+export interface AgentPlan {
+  intent: AgentIntent;
+  useRetrieval: boolean;
+  useMemory: boolean;
+  useDirect: boolean;
+  topK: number;
+  retrievalQuery?: string;
+  reason?: string;
+}
+
+export interface AgentResult {
+  cancelled: boolean;
+  usedRetrieval: boolean;
+  usedMemory: boolean;
+  usedDirect: boolean;
+  sourceCount: number;
+  reason?: string;
+  retrievalQuery?: string;
+  topK?: number;
+}
+
+export interface AgentStatus {
+  phase: AgentPhase;
+  label: string;
+  detail?: string;
+}
 export interface FileUploadItem {
   id: string;
   file?: File;

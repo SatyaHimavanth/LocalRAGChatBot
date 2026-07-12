@@ -1,7 +1,7 @@
 ﻿import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Events } from "@wailsio/runtime";
 import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, GetDocumentContent, GetSessionSources, CancelGeneration, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete } from "../bindings/changeme/internal/app/chatservice";
-import { Message, Chat, Collection, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob } from "./types";
+import { Message, Chat, Collection, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob, AgentPlan, AgentResult } from "./types";
 import { I } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
@@ -20,6 +20,37 @@ input,textarea,button,select{font-family:inherit}
 @keyframes slideIn{from{transform:translateX(120%);opacity:0}to{transform:translateX(0);opacity:1}}
 @keyframes progressPulse{0%,100%{opacity:0.6}50%{opacity:1}}
 `;
+
+
+const buildAgentPlan = (data: any): AgentPlan => ({
+  intent: typeof data?.intent === "string" && data.intent.trim() ? data.intent : "unknown",
+  useRetrieval: data?.useRetrieval === true,
+  useMemory: data?.useMemory === true,
+  useDirect: data?.useDirect === true,
+  topK: Number(data?.topK ?? 0),
+  retrievalQuery: typeof data?.retrievalQuery === "string" ? data.retrievalQuery : "",
+  reason: typeof data?.reason === "string" ? data.reason : "",
+});
+
+const buildAgentResult = (data: any): AgentResult => ({
+  cancelled: data?.cancelled === true,
+  usedRetrieval: data?.usedRetrieval === true,
+  usedMemory: data?.usedMemory === true,
+  usedDirect: data?.usedDirect === true,
+  sourceCount: Number(data?.sourceCount ?? 0),
+  reason: typeof data?.reason === "string" ? data.reason : "",
+  retrievalQuery: typeof data?.retrievalQuery === "string" ? data.retrievalQuery : "",
+  topK: Number(data?.topK ?? 0),
+});
+
+const summarizePlan = (plan: AgentPlan) => {
+  if (plan.useRetrieval) {
+    return plan.retrievalQuery ? `Planning retrieval for "${plan.retrievalQuery}"` : "Planning retrieval...";
+  }
+  if (plan.useMemory) return "Planning from conversation memory...";
+  if (plan.useDirect) return "Planning direct answer...";
+  return "Planning...";
+};
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>("dark");
@@ -92,67 +123,100 @@ export default function App() {
   useEffect(()=>{const h=(e:MouseEvent)=>{if(colDropdownRef.current&&!colDropdownRef.current.contains(e.target as Node))setColDropdownOpen(false)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
   useEffect(()=>{(async ()=>{ await loadCols(); await loadChats(); const list = await loadIncompleteJobs(); if (list && list.length > 0) setShowResumeModal(true); })();},[]);
 
-  useEffect(()=>{
-    const offT=Events.On("chat:token",(e:any)=>{setStatusMsgs([]);const sid=e.data.sessionId;setChats(p=>p.map(c=>{if(c.id!==sid)return c;const ms=[...c.messages];const last=ms[ms.length-1];if(last&&last.sender==="ai"){ms[ms.length-1]={...last,text:last.text+e.data.token}}else{ms.push({id:crypto.randomUUID(),sender:"ai",text:e.data.token})}return{...c,messages:ms}}))});
-        const offD=Events.On("chat:done",(e:any)=>{
-      setGen(false);setStatusMsgs([]);
-      const sid = e?.data?.sessionId;
-      const backendMsgId = e?.data?.msgId;
-      const wasCancelled = e?.data?.cancelled === true;
-      if (!sid) return;
-      // Cancelled with msgId == -1 means no message was saved yet — add a placeholder
-      if (wasCancelled && backendMsgId === -1) {
-        setChats(p=>p.map(c=>{
-          if(c.id!==sid)return c;
-          const ms = [...c.messages];
-          ms.push({ id: crypto.randomUUID(), sender: "ai" as const, text: ".", cancelled: true });
-          return { ...c, messages: ms };
-        }));
-        return;
+
+useEffect(()=>{
+  const offT = Events.On("chat:token", (e:any) => {
+    setStatusMsgs([]);
+    const sid = e.data.sessionId;
+    setChats(p => p.map(c => {
+      if (c.id !== sid) return c;
+      const ms = [...c.messages];
+      const last = ms[ms.length - 1];
+      if (last && last.sender === "ai") {
+        ms[ms.length - 1] = { ...last, text: last.text + e.data.token };
+      } else {
+        ms.push({ id: crypto.randomUUID(), sender: "ai", text: e.data.token });
       }
-      // Cancelled mid-stream — mark the existing message (identified by msgId) as cancelled
-      if (wasCancelled && backendMsgId > 0) {
-        setChats(p=>p.map(c=>{
-          if(c.id!==sid)return c;
-          const ms = [...c.messages];
-          for(let i=ms.length-1;i>=0;i--){
-            if(ms[i].sender==="ai"){
-              ms[i] = { ...ms[i], cancelled: true, id: backendMsgId.toString() };
-              break;
-            }
+      return { ...c, messages: ms };
+    }));
+  });
+
+  const offPlan = Events.On("chat:plan", (e:any) => {
+    const sid = e?.data?.sessionId;
+    if (!sid) return;
+    const plan = buildAgentPlan(e.data);
+    setStatusMsgs([{ id: crypto.randomUUID(), sender: "system", text: summarizePlan(plan) }]);
+    setChats(p => p.map(c => c.id === sid ? { ...c, agentPlan: plan } : c));
+  });
+
+  const offD = Events.On("chat:done", (e:any) => {
+    setGen(false);
+    setStatusMsgs([]);
+    const sid = e?.data?.sessionId;
+    const backendMsgId = e?.data?.msgId;
+    const wasCancelled = e?.data?.cancelled === true;
+    const agentResult = buildAgentResult(e?.data);
+    if (!sid) return;
+
+    // Cancelled with msgId == -1 means no message was saved yet — add a placeholder
+    if (wasCancelled && backendMsgId === -1) {
+      setChats(p => p.map(c => {
+        if (c.id !== sid) return c;
+        const ms = [...c.messages];
+        ms.push({ id: crypto.randomUUID(), sender: "ai" as const, text: ".", cancelled: true, metadata: agentResult });
+        return { ...c, messages: ms, lastAgentResult: agentResult };
+      }));
+      return;
+    }
+
+    // Cancelled mid-stream — mark the existing message (identified by msgId) as cancelled
+    if (wasCancelled && backendMsgId > 0) {
+      setChats(p => p.map(c => {
+        if (c.id !== sid) return c;
+        const ms = [...c.messages];
+        for (let i = ms.length - 1; i >= 0; i--) {
+          if (ms[i].sender === "ai") {
+            ms[i] = { ...ms[i], cancelled: true, id: backendMsgId.toString(), metadata: agentResult };
+            break;
           }
-          return { ...c, messages: ms };
-        }));
-        return;
-      }
-      // Normal completion — update the last AI message's id
-      if (backendMsgId && sid) {
-        setChats(p=>p.map(c=>{
-          if(c.id!==sid)return c;
-          const ms = [...c.messages];
-          for(let i=ms.length-1;i>=0;i--){
-            if(ms[i].sender==="ai"){
-              ms[i] = {...ms[i], id: backendMsgId.toString()};
-              break;
-            }
+        }
+        return { ...c, messages: ms, lastAgentResult: agentResult };
+      }));
+      return;
+    }
+
+    // Normal completion — update the last AI message's id and attach metadata
+    if (backendMsgId && sid) {
+      setChats(p => p.map(c => {
+        if (c.id !== sid) return c;
+        const ms = [...c.messages];
+        for (let i = ms.length - 1; i >= 0; i--) {
+          if (ms[i].sender === "ai") {
+            ms[i] = { ...ms[i], id: backendMsgId.toString(), metadata: agentResult };
+            break;
           }
-          return {...c, messages: ms};
-        }));
-      }
-    });const offStatus=Events.On("chat:status",(e:any)=>{setStatusMsgs([{id:crypto.randomUUID(),sender:"system",text:e.data.label}])});
-    const offSources=Events.On("chat:sources",(e:any)=>{
-      const sid=e.data.sessionId;
-      const msgId=e.data.msgId;
-      const sources=e.data.sources;
-      if (sources && msgId) {
-        setChats(p=>p.map(c=>{
-          if(c.id!==sid)return c;
-          return {...c, messageSources:{...c.messageSources, [msgId]:sources}};
-        }));
-      }
-    });
-    return()=>{offT();offD();offStatus();offSources()};
-  },[]);
+        }
+        return { ...c, messages: ms, lastAgentResult: agentResult };
+      }));
+    }
+  });
+
+  const offStatus = Events.On("chat:status", (e:any) => { setStatusMsgs([{ id: crypto.randomUUID(), sender: "system", text: e.data.label }]); });
+  const offSources = Events.On("chat:sources", (e:any) => {
+    const sid = e.data.sessionId;
+    const msgId = e.data.msgId;
+    const sources = e.data.sources;
+    if (sources && msgId) {
+      setChats(p => p.map(c => {
+        if (c.id !== sid) return c;
+        return { ...c, messageSources: { ...c.messageSources, [msgId]: sources } };
+      }));
+    }
+  });
+
+  return () => { offT(); offPlan(); offD(); offStatus(); offSources(); };
+},[]);
+
 
   // Track durable ingest lifecycle via backend events
   const ingestCountRef = useRef({ success: 0, error: 0, total: 0 });

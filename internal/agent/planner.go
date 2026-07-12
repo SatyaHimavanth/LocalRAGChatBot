@@ -53,11 +53,6 @@ func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
 		return plan
 	}
 
-	if isGreeting(prompt) || isSmallTalk(prompt) {
-		plan.Reason = "small talk"
-		return plan
-	}
-
 	if looksLikeDocumentQuery(prompt) || (req.HasDocuments && looksLikeFollowUp(prompt)) {
 		plan.UseRetrieval = true
 		plan.UseDirect = false
@@ -67,6 +62,7 @@ func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
 	}
 
 	if looksLikeGeneralFollowUp(prompt, req.History) {
+		plan.UseMemory = true
 		plan.Reason = "history answerable follow-up"
 		return plan
 	}
@@ -79,40 +75,16 @@ func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
 		return plan
 	}
 
+	if len(req.History) > 0 {
+		plan.UseMemory = true
+	}
+
 	plan.Reason = "general conversation"
 	return plan
 }
 
 func normalize(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
-}
-
-func isGreeting(text string) bool {
-	patterns := []string{
-		"hi", "hello", "hey", "greetings", "howdy", "good morning", "good afternoon",
-		"good evening", "good night", "what's up", "sup", "yo", "how are you",
-		"how are you doing", "nice to meet you", "pleased to meet you",
-	}
-	cleaned := strings.TrimRight(text, ",.!? \t")
-	for _, p := range patterns {
-		if cleaned == p {
-			return true
-		}
-	}
-	return false
-}
-
-func isSmallTalk(text string) bool {
-	patterns := []string{
-		"thanks", "thank you", "bye", "goodbye", "take care", "see you", "see you later",
-		"who are you", "what are you", "tell me about yourself", "what can you do",
-	}
-	for _, p := range patterns {
-		if text == p || strings.Contains(text, p) {
-			return true
-		}
-	}
-	return false
 }
 
 func looksLikeDocumentQuery(text string) bool {
