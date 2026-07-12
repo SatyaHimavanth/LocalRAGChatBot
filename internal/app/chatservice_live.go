@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"changeme/internal/agent"
 	"changeme/internal/engine"
 	"changeme/internal/store"
 
@@ -116,6 +117,9 @@ type ChatService struct {
 	DB     *sql.DB
 	app    *application.App
 
+	// agent drives persona, memory, and retrieval decisions.
+	agent *agent.Agent
+
 	// cancelFuncs tracks active streaming sessions for cancellation
 	cancelFuncs map[int64]context.CancelFunc
 	cancelMu    sync.Mutex
@@ -128,6 +132,11 @@ type ChatService struct {
 func (s *ChatService) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	s.app = application.Get()
 	s.cancelFuncs = make(map[int64]context.CancelFunc)
+	s.agent = agent.New(
+		agent.WithPersona(agent.DefaultPersona()),
+		agent.WithTools(agent.DefaultTools()),
+		agent.WithPlanner(agent.NewHeuristicPlanner()),
+	)
 	s.CleanupIncompleteOnStartup()
 	return nil
 }
@@ -186,9 +195,18 @@ func getGreetingResponse(text string) string {
 	return "Hello! How can I assist you today?"
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+func (s *ChatService) ensureAgent() *agent.Agent {
+	if s.agent == nil {
+		s.agent = agent.New(
+			agent.WithPersona(agent.DefaultPersona()),
+			agent.WithTools(agent.DefaultTools()),
+			agent.WithPlanner(agent.NewHeuristicPlanner()),
+		)
+	}
+	return s.agent
+}
+
 //  Collection management
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 func (s *ChatService) CreateCollection(name string) (int64, error) {
 	if s.DB == nil {
@@ -250,9 +268,7 @@ func (s *ChatService) GetCollections() ([]store.Collection, error) {
 	return cols, nil
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  Chat session management
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 func (s *ChatService) CreateChat(title string, collectionID int64) (int64, error) {
 	if s.DB == nil {
@@ -321,7 +337,6 @@ func (s *ChatService) UnpinChat(sessionID int64) error {
 	return store.UnpinChatSession(s.DB, sessionID)
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // CancelGeneration cancels an in-progress streaming generation for a session.
 func (s *ChatService) CancelGeneration(sessionID int64) error {
 	s.cancelMu.Lock()
@@ -350,7 +365,6 @@ func (s *ChatService) persistCancelledMessage(sessionID int64) {
 }
 
 //  Messaging
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt string) error {
 	if s.app == nil {
@@ -452,14 +466,33 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 			history = s.loadConversationHistory(sessionID)
 		}
 
-		// Search knowledge base
-		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "searching", "label": "Searching documents..."})
+		ag := s.ensureAgent()
+		plan := ag.Decide(agent.Request{
+			Prompt:         prompt,
+			History:        history,
+			CollectionID:   collectionID,
+			CollectionName: s.getCollectionName(collectionID),
+			HasDocuments:   s.DB != nil,
+		})
 
+		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "planning", "label": "Planning..."})
+		time.Sleep(50 * time.Millisecond)
+		if ctx.Err() != nil {
+			s.persistCancelledMessage(sessionID)
+			return
+		}
+
+		// Search knowledge base only when the agent decides retrieval is useful.
 		var chunks []store.ScoredChunk
-		if s.DB != nil {
-			queryEmb, err := s.Engine.Embed(prompt)
+		if plan.UseRetrieval && s.DB != nil {
+			query := strings.TrimSpace(plan.RetrievalQuery)
+			if query == "" {
+				query = prompt
+			}
+			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "searching", "label": "Searching documents..."})
+			queryEmb, err := s.Engine.Embed(query)
 			if err == nil {
-				chunks, err = store.HybridSearch(s.DB, collectionID, prompt, queryEmb, 5)
+				chunks, err = store.HybridSearch(s.DB, collectionID, query, queryEmb, plan.TopK)
 				if err != nil {
 					chunks = nil
 				}
@@ -493,7 +526,7 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 		ctxSize := getOptimalContextSize()
 
 		// Build messages with both context AND conversation history (also gets source refs)
-		messages, sourceRefs := buildMessagesWithBudget(chunks, prompt, history, ctxSize)
+		messages, sourceRefs := buildMessagesWithBudget(ag, plan, chunks, prompt, history, ctxSize, s.getCollectionName(collectionID))
 
 		chatCtx, err := s.Engine.ChatModel.NewContext(llama.WithContext(ctxSize))
 		if err != nil {
@@ -569,9 +602,7 @@ func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt st
 	return nil
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  File Upload & Parsing
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 type FileUploadResult struct {
 	Filename        string `json:"filename"`
@@ -730,9 +761,7 @@ func (s *ChatService) IngestFile(collectionID int64, filename string, fileConten
 	return nil
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  Universal Search
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 type SearchResult struct {
 	Content        string  `json:"content"`
@@ -952,9 +981,7 @@ func (s *ChatService) GetSessionSources(sessionID int64) ([]store.SourceChunkRef
 	return result, nil
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  Helpers
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 func (s *ChatService) emit(name string, data ...any) {
 	if s.app != nil {
@@ -1005,7 +1032,7 @@ type chunkRef struct {
 	chunk  store.ScoredChunk
 }
 
-func buildMessagesWithBudget(chunks []store.ScoredChunk, prompt string, history []llama.ChatMessage, ctxSize int) ([]llama.ChatMessage, []chunkRef) {
+func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, chunks []store.ScoredChunk, prompt string, history []llama.ChatMessage, ctxSize int, collectionName string) ([]llama.ChatMessage, []chunkRef) {
 	// Scale character budgets proportionally to context window size
 	ratio := float64(ctxSize) / float64(defaultContextSize)
 	scaledMaxTotal := int(float64(maxTotalChars) * ratio)
@@ -1044,11 +1071,11 @@ func buildMessagesWithBudget(chunks []store.ScoredChunk, prompt string, history 
 	}
 
 	systemPrompt := "You are a helpful AI assistant."
-	if contextBuilder.Len() > 0 {
-		systemPrompt += " Use the Document Context below to answer questions. Reference your sources by their [N] numbers in your answer (e.g. 'According to [1]...' or 'As mentioned in the document[1]...'). Always cite sources when using information from the document context."
-		systemPrompt += "\n\nDocument Context:\n" + contextBuilder.String()
-	} else {
-		systemPrompt += " You have the conversation history below. Answer from your general knowledge. If the user asks about specific documents they uploaded, let them know no documents are available."
+	if ag != nil {
+		systemPrompt = ag.RenderSystemPrompt(plan, collectionName, contextBuilder.String())
+	}
+	if systemPrompt == "" {
+		systemPrompt = "You are a helpful AI assistant."
 	}
 
 	messages := []llama.ChatMessage{
