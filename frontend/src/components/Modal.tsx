@@ -1,7 +1,8 @@
 import { I } from "./Icons";
 import { themeVars, Theme } from "../types";
+import type { ReactNode } from "react";
 
-export function Modal({open,onClose,title,children,wide,theme}:{open:boolean;onClose:()=>void;title:string;children:React.ReactNode;wide?:boolean;theme?:Theme}){
+export function Modal({open,onClose,title,children,wide,theme}:{open:boolean;onClose:()=>void;title:string;children:ReactNode;wide?:boolean;theme?:Theme}){
   const T = theme ? themeVars[theme] : null;
   if(!open)return null;
   return(

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -283,239 +284,329 @@ func (s *ChatService) CancelGeneration(sessionID int64) error {
 	return nil
 }
 
-// persistCancelledMessage saves a cancelled AI message to DB and emits chat:done.
-func (s *ChatService) persistCancelledMessage(sessionID int64) {
-	// Only persist if DB is available and no msg was stored yet (to avoid duplicating partial content)
-	s.cancelMu.Lock()
-	defer s.cancelMu.Unlock()
-	if _, exists := s.cancelFuncs[sessionID]; exists {
-		// Still registered = no msg saved yet by the stream loop
-		if s.DB != nil {
-			store.AddCancelledChatMessage(s.DB, sessionID, "assistant", ".")
-		}
-		delete(s.cancelFuncs, sessionID)
-	}
-	s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": int64(-1), "cancelled": true})
-}
-
 //  Messaging
 
-func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt string) error {
+type AgentResponseMeta struct {
+	Cancelled      bool   `json:"cancelled"`
+	UsedRetrieval  bool   `json:"usedRetrieval"`
+	UsedMemory     bool   `json:"usedMemory"`
+	UsedDirect     bool   `json:"usedDirect"`
+	SourceCount    int    `json:"sourceCount"`
+	Reason         string `json:"reason,omitempty"`
+	RetrievalQuery string `json:"retrievalQuery,omitempty"`
+	TopK           int    `json:"topK,omitempty"`
+}
+
+const branchPromptPrefix = "[[branch-parent:"
+
+func encodeBranchPrompt(parentMessageID int64, prompt string) string {
+	return fmt.Sprintf("[[branch-parent:%d]]\n%s", parentMessageID, prompt)
+}
+
+func extractBranchPrompt(prompt string) (string, int64) {
+	trimmed := strings.TrimSpace(prompt)
+	if !strings.HasPrefix(trimmed, branchPromptPrefix) {
+		return prompt, 0
+	}
+	end := strings.Index(trimmed, "]]\n")
+	if end == -1 {
+		return prompt, 0
+	}
+	idStr := strings.TrimPrefix(trimmed[:end], branchPromptPrefix)
+	parentID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return prompt, 0
+	}
+	return strings.TrimSpace(trimmed[end+3:]), parentID
+}
+func (m AgentResponseMeta) asMap(sessionID, msgID int64) map[string]any {
+	return map[string]any{
+		"sessionId":      sessionID,
+		"msgId":          msgID,
+		"cancelled":      m.Cancelled,
+		"usedRetrieval":  m.UsedRetrieval,
+		"usedMemory":     m.UsedMemory,
+		"usedDirect":     m.UsedDirect,
+		"sourceCount":    m.SourceCount,
+		"reason":         m.Reason,
+		"retrievalQuery": m.RetrievalQuery,
+		"topK":           m.TopK,
+	}
+}
+
+func (m AgentResponseMeta) json() string {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func (s *ChatService) startConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64) (int64, error) {
 	if s.app == nil {
 		s.app = application.Get()
 	}
 	if strings.TrimSpace(prompt) == "" {
-		return fmt.Errorf("prompt cannot be empty")
+		return 0, fmt.Errorf("prompt cannot be empty")
 	}
 
-	// Persist user message
+	var userMsgID int64
 	if s.DB != nil {
-		if _, err := store.AddChatMessage(s.DB, sessionID, "user", prompt); err != nil {
-			return fmt.Errorf("persisting user message: %w", err)
+		var err error
+		userMsgID, err = store.AddChatMessage(s.DB, sessionID, "user", prompt, parentMessageID, "")
+		if err != nil {
+			return 0, fmt.Errorf("persisting user message: %w", err)
 		}
+		s.emit("chat:message_saved", map[string]any{
+			"sessionId":       sessionID,
+			"msgId":           userMsgID,
+			"role":            "user",
+			"parentMessageId": parentMessageID,
+		})
 	}
 
-	// â”€â”€ Engine check â”€â”€
 	if s.Engine == nil {
 		s.emit("chat:thinking", map[string]any{"sessionId": sessionID})
 		s.emit("chat:token", map[string]any{
 			"sessionId": sessionID,
 			"token":     "Engine not initialized.",
 		})
-		s.emit("chat:done", sessionID)
-		return nil
+		s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": int64(0), "cancelled": false, "usedRetrieval": false, "usedMemory": false, "usedDirect": true, "sourceCount": 0})
+		return userMsgID, nil
 	}
 
-	// Run the entire process in a background goroutine
-	go func() {
-		// Create a cancelable context so the user can stop generation
-		ctx, cancel := context.WithCancel(context.Background())
-		s.cancelMu.Lock()
-		s.cancelFuncs[sessionID] = cancel
-		s.cancelMu.Unlock()
-		var msgID int64
-		var genComplete bool
-		defer func() {
-			cancel()
-			// genComplete is set to true when the stream loop finishes normally
-			if genComplete {
-				// Normal completion — final emit is done here, not in stream loop
-				if msgID > 0 {
-					s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": msgID})
-				} else {
-					s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": int64(0)})
-				}
-				return
-			}
-			// Not normal completion — check if cancelled
-			s.cancelMu.Lock()
-			if _, exists := s.cancelFuncs[sessionID]; exists {
-				delete(s.cancelFuncs, sessionID)
-				if msgID > 0 && s.DB != nil {
-					store.MarkMessageCancelled(s.DB, msgID)
-					s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": msgID, "cancelled": true})
-				} else if s.DB != nil {
-					store.AddCancelledChatMessage(s.DB, sessionID, "assistant", ".")
-					s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": int64(-1), "cancelled": true})
-				}
-			}
-			s.cancelMu.Unlock()
-		}()
-		s.emit("chat:thinking", map[string]any{"sessionId": sessionID})
-		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "thinking", "label": "Thinking..."})
+	go s.runConversationTurn(sessionID, collectionID, prompt, parentMessageID, userMsgID)
+	return userMsgID, nil
+}
 
-		// Check if cancelled during initial thinking phase
-		if ctx.Err() != nil {
-			s.persistCancelledMessage(sessionID)
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-		if ctx.Err() != nil {
-			s.persistCancelledMessage(sessionID)
-			return
-		}
+func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt string) error {
+	cleanPrompt, parentMessageID := extractBranchPrompt(prompt)
+	_, err := s.startConversationTurn(sessionID, collectionID, cleanPrompt, parentMessageID)
+	return err
+}
 
-		// Load conversation history
-		var history []llama.ChatMessage
+func (s *ChatService) emitAgentPlan(sessionID int64, plan agent.Plan) {
+	intent := "general"
+	switch {
+	case plan.UseRetrieval:
+		intent = "retrieval"
+	case plan.UseMemory:
+		intent = "memory"
+	case !plan.UseDirect:
+		intent = "conversation"
+	}
+	s.emit("chat:plan", map[string]any{
+		"sessionId":      sessionID,
+		"intent":         intent,
+		"useRetrieval":   plan.UseRetrieval,
+		"useMemory":      plan.UseMemory,
+		"useDirect":      plan.UseDirect,
+		"topK":           plan.TopK,
+		"retrievalQuery": plan.RetrievalQuery,
+		"reason":         plan.Reason,
+	})
+}
+
+func (s *ChatService) persistCancelledMessage(sessionID int64, parentMessageID int64, meta AgentResponseMeta) {
+	meta.Cancelled = true
+	s.cancelMu.Lock()
+	var cancelledMsgID int64 = -1
+	if _, exists := s.cancelFuncs[sessionID]; exists {
 		if s.DB != nil {
-			history = s.loadConversationHistory(sessionID)
-		}
-
-		ag := s.ensureAgent()
-		plan := ag.Decide(agent.Request{
-			Prompt:         prompt,
-			History:        history,
-			CollectionID:   collectionID,
-			CollectionName: s.getCollectionName(collectionID),
-			HasDocuments:   s.DB != nil,
-		})
-
-		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "planning", "label": "Planning..."})
-		time.Sleep(50 * time.Millisecond)
-		if ctx.Err() != nil {
-			s.persistCancelledMessage(sessionID)
-			return
-		}
-
-		// Search knowledge base only when the agent decides retrieval is useful.
-		var chunks []store.ScoredChunk
-		if plan.UseRetrieval && s.DB != nil {
-			query := strings.TrimSpace(plan.RetrievalQuery)
-			if query == "" {
-				query = prompt
-			}
-			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "searching", "label": "Searching documents..."})
-			queryEmb, err := s.Engine.Embed(query)
-			if err == nil {
-				chunks, err = store.HybridSearch(s.DB, collectionID, query, queryEmb, plan.TopK)
-				if err != nil {
-					chunks = nil
+			if parentMessageID == 0 {
+				if msgs, err := store.GetChatMessages(s.DB, sessionID); err == nil && len(msgs) > 0 {
+					parentMessageID = msgs[len(msgs)-1].ID
 				}
 			}
-		}
-		if ctx.Err() != nil {
-			s.persistCancelledMessage(sessionID)
-			return
-		}
-
-		if len(chunks) > 0 {
-			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "found", "label": fmt.Sprintf("Found %d relevant sections ✓", len(chunks))})
-			time.Sleep(150 * time.Millisecond)
-			if ctx.Err() != nil {
-				s.persistCancelledMessage(sessionID)
-				return
-			}
-			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "summarizing", "label": "Summarizing..."})
-		} else {
-			s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "thinking", "label": "Thinking..."})
-		}
-		time.Sleep(100 * time.Millisecond)
-		if ctx.Err() != nil {
-			s.persistCancelledMessage(sessionID)
-			return
-		}
-
-		s.emit("chat:thinking:done", map[string]any{"sessionId": sessionID})
-
-		// Get optimal context size
-		ctxSize := getOptimalContextSize()
-
-		// Build messages with both context AND conversation history (also gets source refs)
-		messages, sourceRefs := buildMessagesWithBudget(ag, plan, chunks, prompt, history, ctxSize, s.getCollectionName(collectionID))
-
-		chatCtx, err := s.Engine.ChatModel.NewContext(llama.WithContext(ctxSize))
-		if err != nil {
-			s.emit("chat:token", map[string]any{"sessionId": sessionID, "token": fmt.Sprintf("\n[Error: %v]\n", err)})
-			s.emit("chat:done", sessionID)
-			return
-		}
-		defer chatCtx.Close()
-
-		maxTokens := maxResponseTokens
-		deltas, errs := chatCtx.ChatStream(ctx, messages, llama.ChatOptions{
-			MaxTokens: &maxTokens,
-		})
-
-		var fullResponse strings.Builder
-		for {
-			select {
-			case delta, ok := <-deltas:
-				if !ok {
-					if s.DB != nil && fullResponse.Len() > 0 {
-						// Persist the AI message
-						msgID, err = store.AddChatMessage(s.DB, sessionID, "assistant", fullResponse.String())
-						if err == nil && len(sourceRefs) > 0 {
-							// Store source references
-							colName := s.getCollectionName(collectionID)
-							for _, sr := range sourceRefs {
-								filename := s.getChunkFilename(sr.chunk.ChunkID)
-								score := normalizeMatchScore(sr.chunk.Score)
-								store.AddMessageSource(s.DB, msgID, sessionID, sr.chunk.ChunkID, filename, collectionID, colName, score, sr.chunk.Content, sr.refNum)
-							}
-							// Emit sources to frontend with filenames
-							sourceMap := make([]map[string]any, 0, len(sourceRefs))
-							for _, sr := range sourceRefs {
-								fn := s.getChunkFilename(sr.chunk.ChunkID)
-								score := normalizeMatchScore(sr.chunk.Score)
-								sourceMap = append(sourceMap, map[string]any{
-									"refNumber":      sr.refNum,
-									"chunkId":        sr.chunk.ChunkID,
-									"content":        sr.chunk.Content,
-									"filename":       fn,
-									"collectionId":   collectionID,
-									"collectionName": colName,
-									"similarity":     score,
-								})
-							}
-							s.emit("chat:sources", map[string]any{
-								"sessionId": sessionID,
-								"msgId":     msgID,
-								"sources":   sourceMap,
-							})
-						}
-						genComplete = true
-					}
-					return
-				}
-				fullResponse.WriteString(delta.Content)
-				s.emit("chat:token", map[string]any{
-					"sessionId": sessionID,
-					"token":     delta.Content,
-				})
-			case err := <-errs:
-				if err != nil {
-					s.emit("chat:token", map[string]any{
-						"sessionId": sessionID,
-						"token":     fmt.Sprintf("\n[Error: %v]\n", err),
-					})
-					s.emit("chat:done", map[string]any{"sessionId": sessionID, "msgId": int64(0)})
-					return
-				}
+			if id, err := store.AddCancelledChatMessage(s.DB, sessionID, "assistant", ".", parentMessageID, meta.json()); err == nil {
+				cancelledMsgID = id
 			}
 		}
+		delete(s.cancelFuncs, sessionID)
+	}
+	s.cancelMu.Unlock()
+	s.emit("chat:done", meta.asMap(sessionID, cancelledMsgID))
+}
+
+func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64, userMessageID int64) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancelMu.Lock()
+	s.cancelFuncs[sessionID] = cancel
+	s.cancelMu.Unlock()
+
+	var msgID int64
+	var doneEmitted bool
+	meta := AgentResponseMeta{UsedDirect: true}
+	defer func() {
+		cancel()
+		if doneEmitted {
+			s.cancelMu.Lock()
+			delete(s.cancelFuncs, sessionID)
+			s.cancelMu.Unlock()
+			return
+		}
+		if ctx.Err() != nil {
+			meta.Cancelled = true
+			s.persistCancelledMessage(sessionID, userMessageID, meta)
+			return
+		}
+		s.cancelMu.Lock()
+		delete(s.cancelFuncs, sessionID)
+		s.cancelMu.Unlock()
 	}()
 
-	return nil
+	s.emit("chat:thinking", map[string]any{"sessionId": sessionID})
+	s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "thinking", "label": "Thinking..."})
+
+	if ctx.Err() != nil {
+		meta.Cancelled = true
+		s.persistCancelledMessage(sessionID, userMessageID, meta)
+		return
+	}
+	time.Sleep(200 * time.Millisecond)
+	if ctx.Err() != nil {
+		meta.Cancelled = true
+		s.persistCancelledMessage(sessionID, userMessageID, meta)
+		return
+	}
+
+	var history []llama.ChatMessage
+	if s.DB != nil {
+		history = s.loadConversationHistory(sessionID)
+	}
+
+	ag := s.ensureAgent()
+	plan := ag.Decide(agent.Request{
+		Prompt:         prompt,
+		History:        history,
+		CollectionID:   collectionID,
+		CollectionName: s.getCollectionName(collectionID),
+		HasDocuments:   s.DB != nil,
+	})
+
+	meta.UsedRetrieval = plan.UseRetrieval
+	meta.UsedMemory = plan.UseMemory
+	meta.UsedDirect = !plan.UseRetrieval && !plan.UseMemory
+	meta.RetrievalQuery = plan.RetrievalQuery
+	meta.TopK = plan.TopK
+	meta.Reason = plan.Reason
+
+	s.emitAgentPlan(sessionID, plan)
+	s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "planning", "label": "Planning..."})
+	time.Sleep(50 * time.Millisecond)
+	if ctx.Err() != nil {
+		meta.Cancelled = true
+		s.persistCancelledMessage(sessionID, userMessageID, meta)
+		return
+	}
+
+	var chunks []store.ScoredChunk
+	if plan.UseRetrieval && s.DB != nil {
+		query := strings.TrimSpace(plan.RetrievalQuery)
+		if query == "" {
+			query = prompt
+		}
+		meta.RetrievalQuery = query
+		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "searching", "label": "Searching documents..."})
+		queryEmb, err := s.Engine.Embed(query)
+		if err == nil {
+			chunks, err = store.HybridSearch(s.DB, collectionID, query, queryEmb, plan.TopK)
+			if err != nil {
+				chunks = nil
+			}
+		}
+	}
+	meta.SourceCount = len(chunks)
+	if ctx.Err() != nil {
+		meta.Cancelled = true
+		s.persistCancelledMessage(sessionID, userMessageID, meta)
+		return
+	}
+
+	if len(chunks) > 0 {
+		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "found", "label": fmt.Sprintf("Found %d relevant sections ✓", len(chunks))})
+		time.Sleep(150 * time.Millisecond)
+		if ctx.Err() != nil {
+			meta.Cancelled = true
+			s.persistCancelledMessage(sessionID, userMessageID, meta)
+			return
+		}
+		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "summarizing", "label": "Summarizing..."})
+	} else {
+		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "thinking", "label": "Thinking..."})
+	}
+	time.Sleep(100 * time.Millisecond)
+	if ctx.Err() != nil {
+		meta.Cancelled = true
+		s.persistCancelledMessage(sessionID, userMessageID, meta)
+		return
+	}
+
+	s.emit("chat:thinking:done", map[string]any{"sessionId": sessionID})
+
+	ctxSize := getOptimalContextSize()
+	messages, sourceRefs := buildMessagesWithBudget(ag, plan, chunks, prompt, history, ctxSize, s.getCollectionName(collectionID))
+
+	chatCtx, err := s.Engine.ChatModel.NewContext(llama.WithContext(ctxSize))
+	if err != nil {
+		s.emit("chat:token", map[string]any{"sessionId": sessionID, "token": fmt.Sprintf("\n[Error: %v]\n", err)})
+		s.emit("chat:done", meta.asMap(sessionID, int64(0)))
+		doneEmitted = true
+		return
+	}
+	defer chatCtx.Close()
+
+	maxTokens := maxResponseTokens
+	deltas, errs := chatCtx.ChatStream(ctx, messages, llama.ChatOptions{MaxTokens: &maxTokens})
+
+	var fullResponse strings.Builder
+	for {
+		select {
+		case delta, ok := <-deltas:
+			if !ok {
+				if s.DB != nil && fullResponse.Len() > 0 {
+					assistantMetaJSON := meta.json()
+					msgID, err = store.AddChatMessage(s.DB, sessionID, "assistant", fullResponse.String(), userMessageID, assistantMetaJSON)
+					if err == nil && len(sourceRefs) > 0 {
+						colName := s.getCollectionName(collectionID)
+						for _, sr := range sourceRefs {
+							filename := s.getChunkFilename(sr.chunk.ChunkID)
+							score := normalizeMatchScore(sr.chunk.Score)
+							store.AddMessageSource(s.DB, msgID, sessionID, sr.chunk.ChunkID, filename, collectionID, colName, score, sr.chunk.Content, sr.refNum)
+						}
+						sourceMap := make([]map[string]any, 0, len(sourceRefs))
+						for _, sr := range sourceRefs {
+							fn := s.getChunkFilename(sr.chunk.ChunkID)
+							score := normalizeMatchScore(sr.chunk.Score)
+							sourceMap = append(sourceMap, map[string]any{
+								"refNumber":      sr.refNum,
+								"chunkId":        sr.chunk.ChunkID,
+								"content":        sr.chunk.Content,
+								"filename":       fn,
+								"collectionId":   collectionID,
+								"collectionName": colName,
+								"similarity":     score,
+							})
+						}
+						s.emit("chat:sources", map[string]any{"sessionId": sessionID, "msgId": msgID, "sources": sourceMap})
+					}
+				}
+				meta.Cancelled = false
+				s.emit("chat:done", meta.asMap(sessionID, msgID))
+				doneEmitted = true
+				return
+			}
+			fullResponse.WriteString(delta.Content)
+			s.emit("chat:token", map[string]any{"sessionId": sessionID, "token": delta.Content})
+		case err := <-errs:
+			if err != nil {
+				s.emit("chat:token", map[string]any{"sessionId": sessionID, "token": fmt.Sprintf("\n[Error: %v]\n", err)})
+				s.emit("chat:done", meta.asMap(sessionID, int64(0)))
+				doneEmitted = true
+				return
+			}
+		}
+	}
 }
 
 //  File Upload & Parsing

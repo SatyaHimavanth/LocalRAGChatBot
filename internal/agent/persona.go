@@ -81,9 +81,9 @@ func (p Persona) RenderSystemPrompt(plan Plan, tools []ToolSpec, collectionName,
 	}
 
 	if plan.UseRetrieval {
-		b.WriteString("\n\nUse the available document context when it is relevant. Prefer the retrieved sources over memory when they conflict.")
+		b.WriteString("\n\nThe retrieved document context is authoritative for factual claims on this turn. Use it first, prefer it over memory when they conflict, and do not invent APIs, examples, or document details that are not present in the retrieved context.")
 	} else {
-		b.WriteString("\n\nNo retrieval is required for this turn unless the conversation clearly needs document context.")
+		b.WriteString("\n\nNo retrieval is required for this turn unless the conversation clearly needs document context. Answer naturally from conversation context or general knowledge.")
 	}
 
 	if ctx := strings.TrimSpace(docContext); ctx != "" {

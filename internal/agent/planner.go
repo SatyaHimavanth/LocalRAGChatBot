@@ -43,7 +43,6 @@ func NewHeuristicPlanner() *HeuristicPlanner {
 func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
 	prompt := normalize(req.Prompt)
 	plan := Plan{
-		UseMemory: len(req.History) > 0,
 		UseDirect: true,
 		TopK:      p.TopK,
 	}
@@ -63,6 +62,7 @@ func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
 
 	if looksLikeGeneralFollowUp(prompt, req.History) {
 		plan.UseMemory = true
+		plan.UseDirect = false
 		plan.Reason = "history answerable follow-up"
 		return plan
 	}
@@ -73,10 +73,6 @@ func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
 		plan.RetrievalQuery = rewriteQuery(prompt, req.History)
 		plan.Reason = "possibly document related"
 		return plan
-	}
-
-	if len(req.History) > 0 {
-		plan.UseMemory = true
 	}
 
 	plan.Reason = "general conversation"

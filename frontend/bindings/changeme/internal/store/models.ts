@@ -8,12 +8,15 @@ export interface ChatMessage {
     "content": string;
     "createdAt": number;
     "cancelled": boolean;
+    "parentMessageId": number;
+    "agentMetadataJson"?: string;
 }
 
 export interface ChatSession {
     "id": number;
     "title": string;
     "collectionId": number;
+    "currentLeafMessageId": number;
     "createdAt": number;
     "archived": boolean;
     "pinned": boolean;

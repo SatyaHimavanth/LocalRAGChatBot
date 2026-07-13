@@ -1,4 +1,5 @@
-﻿import React, { useState, useEffect, useRef, useCallback } from "react";
+﻿import { useState, useEffect, useRef, useCallback } from "react";
+import type { ReactNode } from "react";
 import { Events } from "@wailsio/runtime";
 import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, GetDocumentContent, GetSessionSources, CancelGeneration, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete } from "../bindings/changeme/internal/app/chatservice";
 import { Message, Chat, Collection, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob, AgentPlan, AgentResult } from "./types";
@@ -51,6 +52,20 @@ const summarizePlan = (plan: AgentPlan) => {
   if (plan.useDirect) return "Planning direct answer...";
   return "Planning...";
 };
+
+const parseStoredAgentResult = (raw: any): AgentResult | undefined => {
+  if (!raw) return undefined;
+  if (typeof raw === "object") return buildAgentResult(raw);
+  if (typeof raw !== "string") return undefined;
+  try {
+    return buildAgentResult(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+};
+
+const encodeBranchPrompt = (parentMessageId: number, prompt: string) => `[[branch-parent:${parentMessageId}]]\n${prompt}`;
+
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>("dark");
@@ -141,6 +156,23 @@ useEffect(()=>{
     }));
   });
 
+  const offMessageSaved = Events.On("chat:message_saved", (e:any) => {
+    const sid = e?.data?.sessionId;
+    const backendMsgId = Number(e?.data?.msgId ?? 0);
+    if (!sid || !backendMsgId) return;
+    setChats(p => p.map(c => {
+      if (c.id !== sid) return c;
+      const ms = [...c.messages];
+      for (let i = ms.length - 1; i >= 0; i--) {
+        if (ms[i].sender === "user") {
+          ms[i] = { ...ms[i], id: backendMsgId.toString() };
+          break;
+        }
+      }
+      return { ...c, messages: ms, currentLeafMessageId: backendMsgId };
+    }));
+  });
+
   const offPlan = Events.On("chat:plan", (e:any) => {
     const sid = e?.data?.sessionId;
     if (!sid) return;
@@ -174,13 +206,18 @@ useEffect(()=>{
       setChats(p => p.map(c => {
         if (c.id !== sid) return c;
         const ms = [...c.messages];
+        let found = false;
         for (let i = ms.length - 1; i >= 0; i--) {
           if (ms[i].sender === "ai") {
             ms[i] = { ...ms[i], cancelled: true, id: backendMsgId.toString(), metadata: agentResult };
+            found = true;
             break;
           }
         }
-        return { ...c, messages: ms, lastAgentResult: agentResult };
+        if (!found) {
+          ms.push({ id: backendMsgId.toString(), sender: "ai" as const, text: ".", cancelled: true, metadata: agentResult });
+        }
+        return { ...c, messages: ms, lastAgentResult: agentResult, currentLeafMessageId: backendMsgId };
       }));
       return;
     }
@@ -190,13 +227,18 @@ useEffect(()=>{
       setChats(p => p.map(c => {
         if (c.id !== sid) return c;
         const ms = [...c.messages];
+        let found = false;
         for (let i = ms.length - 1; i >= 0; i--) {
           if (ms[i].sender === "ai") {
             ms[i] = { ...ms[i], id: backendMsgId.toString(), metadata: agentResult };
+            found = true;
             break;
           }
         }
-        return { ...c, messages: ms, lastAgentResult: agentResult };
+        if (!found) {
+          ms.push({ id: backendMsgId.toString(), sender: "ai" as const, text: "", metadata: agentResult });
+        }
+        return { ...c, messages: ms, lastAgentResult: agentResult, currentLeafMessageId: backendMsgId };
       }));
     }
   });
@@ -214,7 +256,7 @@ useEffect(()=>{
     }
   });
 
-  return () => { offT(); offPlan(); offD(); offStatus(); offSources(); };
+  return () => { offT(); offMessageSaved(); offPlan(); offD(); offStatus(); offSources(); };
 },[]);
 
 
@@ -279,41 +321,140 @@ useEffect(()=>{
   })))}catch(e){setIdocs([])}};
   useEffect(()=>{if(tab==="cols"){loadDocs(activeColId);setSelectedDocId(null);setSelectedDocContent("")}},[activeColId,tab]);
 
-  const loadChats=async()=>{
-    try{const s:any=await GetChats();if(s?.length){const loaded:Chat[]=[];for(const sess of s){const ms:any=await GetChatMessages(sess.id);
-      // Load source references for this session
-      let msgSources: Record<number, any[]> = {};
-      try {
-        const sources: any = await GetSessionSources(sess.id);
-        if (sources?.length > 0) {
-          for (const src of sources) {
-            if (!msgSources[src.messageId]) msgSources[src.messageId] = [];
-            msgSources[src.messageId].push({
-              refNumber: src.refNumber,
-              chunkId: src.chunkId,
-              content: src.content,
-              filename: src.filename,
-              collectionId: src.collectionId,
-              collectionName: src.collectionName,
-              similarity: src.similarity,
-            });
+  const loadChats = async () => {
+    try {
+      const s: any = await GetChats();
+      if (s?.length) {
+        const loaded: Chat[] = [];
+        for (const sess of s) {
+          const ms: any = await GetChatMessages(sess.id);
+          let msgSources: Record<number, any[]> = {};
+          try {
+            const sources: any = await GetSessionSources(sess.id);
+            if (sources?.length > 0) {
+              for (const src of sources) {
+                if (!msgSources[src.messageId]) msgSources[src.messageId] = [];
+                msgSources[src.messageId].push({
+                  refNumber: src.refNumber,
+                  chunkId: src.chunkId,
+                  content: src.content,
+                  filename: src.filename,
+                  collectionId: src.collectionId,
+                  collectionName: src.collectionName,
+                  similarity: src.similarity,
+                });
+              }
+            }
+          } catch (e) {
+            /* ignore source loading errors */
           }
+
+          loaded.push({
+            id: sess.id,
+            title: sess.title || "New Chat",
+            messages: (ms || []).map((m: any) => ({
+              id: m.id.toString(),
+              sender: m.role === "user" ? "user" : "ai",
+              text: m.content,
+              cancelled: m.cancelled === true,
+              parentMessageId: Number(m.parentMessageId ?? m.ParentMessageID ?? 0) || undefined,
+              metadata: parseStoredAgentResult(m.agentMetadataJson ?? m.agentMetadataJSON ?? m.agentMetadata ?? ""),
+            })),
+            createdAt: sess.createdAt * 1000,
+            archived: sess.archived === true,
+            pinned: sess.pinned === true,
+            currentLeafMessageId: Number(sess.currentLeafMessageId ?? sess.currentLeafMessageID ?? 0) || undefined,
+            messageSources: msgSources,
+          });
         }
-      } catch(e) { /* ignore source loading errors */ }
-      loaded.push({id:sess.id,title:sess.title||"New Chat",messages:(ms||[]).map((m:any)=>({id:m.id.toString(),sender:m.role==="user"?"user":"ai",text:m.content,cancelled:m.cancelled===true})),createdAt:sess.createdAt*1000,archived:sess.archived===true,pinned:sess.pinned===true,messageSources:msgSources})}setChats(loaded);if(loaded.length&&!activeChatId)setActiveChatId(loaded[0].id)}else if(!createdInitialChat.current){createdInitialChat.current=true;newChat()}}catch(e){console.error(e)}
+        setChats(loaded);
+        if (loaded.length && !activeChatId) setActiveChatId(loaded[0].id);
+      } else if (!createdInitialChat.current) {
+        createdInitialChat.current = true;
+        newChat();
+      }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  const newChat=async()=>{const empty=chats.find(c=>c.messages.length===0&&!c.archived);if(empty){setActiveChatId(empty.id);setTab("chat");return}try{const id=await CreateChat("New Chat",activeColId);setChats(p=>[{id,title:"New Chat",messages:[],createdAt:Date.now(),archived:false,pinned:false},...p]);setActiveChatId(id);setTab("chat")}catch(e){console.error(e)}};
+  const newChat = async () => {const empty=chats.find(c=>c.messages.length===0&&!c.archived);if(empty){setActiveChatId(empty.id);setTab("chat");return}try{const id=await CreateChat("New Chat",activeColId);setChats(p=>[{id,title:"New Chat",messages:[],createdAt:Date.now(),archived:false,pinned:false},...p]);setActiveChatId(id);setTab("chat")}catch(e){console.error(e)}};
 
-  const send=async()=>{
-    if(!input.trim()||gen||isArchived)return;
-    let tid=activeChatId;if(!tid){try{tid=await CreateChat("New Chat",activeColId);setChats(p=>[{id:tid,title:"New Chat",messages:[],createdAt:Date.now(),archived:false,pinned:false},...p]);setActiveChatId(tid)}catch(e){console.error(e);return}}
-    const msg=input;setInput("");setGen(true);setStatusMsgs([{id:crypto.randomUUID(),sender:"system",text:"Thinking..."}]);
-    const oldChat=chats.find(c=>c.id===tid);const isNew=oldChat?.title==="New Chat";
-    const newTitle=isNew?(msg.length>25?msg.slice(0,25)+"...":msg):oldChat?.title||"New Chat";
-    if(isNew&&tid){try{await UpdateChatTitle(tid,newTitle)}catch(e){}}
-    setChats(p=>p.map(c=>c.id===tid?{...c,title:newTitle,messages:[...c.messages,{id:crypto.randomUUID(),sender:"user",text:msg}]}:c));
-    try{await SendMessage(tid,activeColId,msg)}catch(e){console.error(e);setGen(false);setStatusMsgs([])}
+  const submitPrompt = async (
+    prompt: string,
+    options?: { parentMessageId?: number; renameChat?: boolean }
+  ) => {
+    if (!prompt.trim() || gen || isArchived) return;
+
+    let tid = activeChatId;
+    if (!tid) {
+      try {
+        tid = await CreateChat("New Chat", activeColId);
+        setChats((p) => [{ id: tid, title: "New Chat", messages: [], createdAt: Date.now(), archived: false, pinned: false }, ...p]);
+        setActiveChatId(tid);
+      } catch (e) {
+        console.error(e);
+        return;
+      }
+    }
+
+    const msg = prompt;
+    const tempId = crypto.randomUUID();
+    setInput("");
+    setGen(true);
+    setStatusMsgs([{ id: crypto.randomUUID(), sender: "system", text: "Thinking..." }]);
+
+    const oldChat = chats.find((c) => c.id === tid);
+    const shouldRename = options?.renameChat !== false && !options?.parentMessageId;
+    const isNew = oldChat?.title === "New Chat";
+    const newTitle = shouldRename && isNew ? (msg.length > 25 ? msg.slice(0, 25) + "..." : msg) : oldChat?.title || "New Chat";
+    if (shouldRename && isNew && tid) {
+      try {
+        await UpdateChatTitle(tid, newTitle);
+      } catch (e) {
+        /* ignore */
+      }
+    }
+
+    const promptForBackend = options?.parentMessageId ? encodeBranchPrompt(options.parentMessageId, msg) : msg;
+    setChats((p) =>
+      p.map((c) =>
+        c.id === tid
+          ? {
+              ...c,
+              title: newTitle,
+              messages: [...c.messages, { id: tempId, sender: "user", text: msg, parentMessageId: options?.parentMessageId }],
+            }
+          : c
+      )
+    );
+
+    try {
+      await SendMessage(tid, activeColId, promptForBackend);
+    } catch (e) {
+      console.error(e);
+      setGen(false);
+      setStatusMsgs([]);
+      setChats((p) => p.map((c) => {
+        if (c.id !== tid) return c;
+        const ms = [...c.messages];
+        for (let i = ms.length - 1; i >= 0; i--) {
+          if (ms[i].sender === "user" && ms[i].text === msg) {
+            ms.splice(i, 1);
+            break;
+          }
+        }
+        return { ...c, messages: ms };
+      }));
+    }
+  };
+
+  const send = async () => {
+    await submitPrompt(input, { renameChat: true });
+  };
+
+  const handleBranchFromMessage = async (messageId: number, prompt: string) => {
+    await submitPrompt(prompt, { parentMessageId: messageId, renameChat: false });
   };
 
   // Two-phase batch: extract all files first, then embed (durable on backend).
@@ -448,7 +589,7 @@ useEffect(()=>{
 
       {tab === "chat" && <ChatPanel activeChat={activeChat} isArchived={isArchived} input={input} gen={gen} statusMsgs={statusMsgs} T={T} theme={theme} collSelector={collSelector}
         onInputChange={setInput} onSend={send} onThemeToggle={() => setTheme(theme === "dark" ? "light" : "dark")} onOpenUploadModal={() => setShowUploadModal(true)}
-        onStopGeneration={gen ? handleStopGeneration : undefined} />}
+        onStopGeneration={gen ? handleStopGeneration : undefined} onRerunFromMessage={handleBranchFromMessage} />}
 
       {tab === "search" && <SearchPanel sq={sq} sResults={sResults} sBusy={sBusy} sDone={sDone} searchFilter={searchFilter} filteredResults={filteredResults} T={T} displayScore={displayScore}
         onSearch={doSearch} onClear={clearSearch} onSqChange={setSq} onFilterChange={setSearchFilter} />}
@@ -511,7 +652,7 @@ useEffect(()=>{
 
 // (btnStyleSmall removed because it's unused.)
 
-function ctxMenuItem(label: string, icon: React.ReactNode, onClick: () => void, T: any, isDanger?: boolean) {
+function ctxMenuItem(label: string, icon: ReactNode, onClick: () => void, T: any, isDanger?: boolean) {
   return (
     <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 13, color: isDanger ? "rgba(239,68,68,0.85)" : T.text2 }}
       onMouseEnter={e => (e.target as HTMLElement).style.background = "rgba(128,128,128,0.06)"}
