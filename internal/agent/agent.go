@@ -69,12 +69,12 @@ func (a *Agent) Decide(req Request) Plan {
 }
 
 // RenderSystemPrompt composes the system prompt from persona, tools and state.
-func (a *Agent) RenderSystemPrompt(plan Plan, collectionName string, docContext string) string {
+func (a *Agent) RenderSystemPrompt(plan Plan, collectionName string, docContext string, workspaceMemory string, evidenceSummary string) string {
 	a.mu.RLock()
 	persona := a.Persona
 	tools := append([]ToolSpec(nil), a.Tools...)
 	a.mu.RUnlock()
-	return persona.RenderSystemPrompt(plan, tools, collectionName, docContext)
+	return persona.RenderSystemPrompt(plan, tools, collectionName, docContext, workspaceMemory, evidenceSummary)
 }
 
 // ToolPrompt returns a compact tool overview suitable for the system prompt.

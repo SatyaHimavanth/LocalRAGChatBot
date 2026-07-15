@@ -7,6 +7,7 @@ export {
 };
 
 export type {
+    DiagnosticsSnapshot,
     FileUploadResult,
     IngestBatchResult,
     IngestFilePayload,

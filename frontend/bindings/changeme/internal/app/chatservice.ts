@@ -83,12 +83,27 @@ export function GetChatMessages(sessionID: number): $CancellablePromise<store$0.
     return $Call.ByID(227903766, sessionID);
 }
 
+export function GetChatMessagesFlat(sessionID: number): $CancellablePromise<store$0.ChatMessage[] | null> {
+    return $Call.ByID(1018601665, sessionID);
+}
+
 export function GetChats(): $CancellablePromise<store$0.ChatSession[] | null> {
     return $Call.ByID(3792084875);
 }
 
+/**
+ * GetCollectionInsights returns richer analytics for each collection.
+ */
+export function GetCollectionInsights(): $CancellablePromise<store$0.CollectionInsight[] | null> {
+    return $Call.ByID(1904409045);
+}
+
 export function GetCollections(): $CancellablePromise<store$0.Collection[] | null> {
     return $Call.ByID(3945395097);
+}
+
+export function GetDiagnostics(): $CancellablePromise<$models.DiagnosticsSnapshot> {
+    return $Call.ByID(1632327584);
 }
 
 /**
@@ -123,6 +138,10 @@ export function GetSessionSources(sessionID: number): $CancellablePromise<store$
     return $Call.ByID(2419631210, sessionID);
 }
 
+export function GetWorkspaceMemory(sessionID: number): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(1281620674, sessionID);
+}
+
 /**
  * IngestFile stages pasted text then embeds via the durable two-phase pipeline.
  */
@@ -148,6 +167,10 @@ export function PinChat(sessionID: number): $CancellablePromise<void> {
     return $Call.ByID(3755018561, sessionID);
 }
 
+export function RefreshWorkspaceMemory(sessionID: number): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(1126322195, sessionID);
+}
+
 /**
  * ResumeIngest continues embedding for all resumable incomplete documents.
  */
@@ -161,6 +184,10 @@ export function Search(query: string, collectionID: number): $CancellablePromise
 
 export function SendMessage(sessionID: number, collectionID: number, prompt: string): $CancellablePromise<void> {
     return $Call.ByID(279711485, sessionID, collectionID, prompt);
+}
+
+export function SetChatCurrentLeafMessage(sessionID: number, leafMessageID: number): $CancellablePromise<void> {
+    return $Call.ByID(1158061970, sessionID, leafMessageID);
 }
 
 /**
@@ -180,6 +207,10 @@ export function UnpinChat(sessionID: number): $CancellablePromise<void> {
 
 export function UpdateChatTitle(sessionID: number, title: string): $CancellablePromise<void> {
     return $Call.ByID(239667623, sessionID, title);
+}
+
+export function UpdateWorkspaceNotes(sessionID: number, notes: string): $CancellablePromise<void> {
+    return $Call.ByID(2483370071, sessionID, notes);
 }
 
 /**

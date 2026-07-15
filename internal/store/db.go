@@ -79,7 +79,7 @@ func runMigrations(db *sql.DB) error {
 	// Use a tracking table so migrations only run once
 	db.Exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at INTEGER)`)
 
-	files := []string{"0001_init.sql", "0002_fts5.sql", "0003_vec.sql"}
+	files := []string{"0001_init.sql", "0002_fts5.sql", "0003_vec.sql", "0004_workspace.sql", "0005_chunks_meta.sql"}
 	for _, f := range files {
 		// Check if already applied
 		var count int

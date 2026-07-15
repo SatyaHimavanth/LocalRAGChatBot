@@ -1,23 +1,28 @@
 import { useState, useMemo } from "react";
-import { Collection, DocRecord, ThemeVars } from "../types";
+import { Collection, CollectionInsight, DocRecord, IncompleteJob, Theme, ThemeVars } from "../types";
 import { I } from "./Icons";
+import { IngestQueuePanel } from "./IngestQueuePanel";
 
 type SortKey = "filename" | "chunks" | "date";
 type SortDir = "asc" | "desc";
 
 interface CollectionsPanelProps {
-  cols: Collection[]; activeColId: number; idocs: DocRecord[];
+  cols: Collection[]; insights: CollectionInsight[]; activeColId: number; idocs: DocRecord[];
+  incompleteJobs: IncompleteJob[]; isIngesting: boolean;
   selectedDocId: number|null; selectedDocContent: string;
   T: ThemeVars;
+  theme: Theme;
   onSelectCol: (id: number) => void; onDeleteCol: (id: number) => void;
   onDeleteDoc: (id: number) => void; onViewDoc: (id: number) => void;
   onRefresh: () => void;
+  onResumeIncomplete: () => void; onDiscardIncomplete: () => void; onDiscardIncompleteJob: (id: number) => void; onRefreshIncomplete: () => void;
   newColName: string; onNewColNameChange: (v: string) => void; onCreateCol: () => void;
   onOpenUploadModal: () => void;
 }
 
 export function CollectionsPanel(props:CollectionsPanelProps){
   const T=props.T;
+  const selectedInsight = props.insights.find(i => i.id === props.activeColId);
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -46,12 +51,20 @@ export function CollectionsPanel(props:CollectionsPanelProps){
   return(
     <div style={{flex:1,display:"flex",flexDirection:"column",padding:20,overflow:"auto",minWidth:0,minHeight:0}}>
       <h2 style={{fontSize:18,fontWeight:600,marginBottom:16,flexShrink:0}}>Knowledge Collections</h2>
+      {selectedInsight && (
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:16}}>
+          <div style={{padding:"10px 12px",borderRadius:8,border:"1px solid "+T.border,background:T.bg2}}><div style={{fontSize:11,color:T.text3,marginBottom:4}}>Documents</div><div style={{fontSize:18,fontWeight:700}}>{selectedInsight.totalDocumentCount}</div><div style={{fontSize:11,color:T.text3,marginTop:2}}>{selectedInsight.readyDocumentCount} ready · {selectedInsight.incompleteDocumentCount} pending</div></div>
+          <div style={{padding:"10px 12px",borderRadius:8,border:"1px solid "+T.border,background:T.bg2}}><div style={{fontSize:11,color:T.text3,marginBottom:4}}>Chunks</div><div style={{fontSize:18,fontWeight:700}}>{selectedInsight.chunkCount}</div><div style={{fontSize:11,color:T.text3,marginTop:2}}>Across indexed documents</div></div>
+          <div style={{padding:"10px 12px",borderRadius:8,border:"1px solid "+T.border,background:T.bg2}}><div style={{fontSize:11,color:T.text3,marginBottom:4}}>Chats</div><div style={{fontSize:18,fontWeight:700}}>{selectedInsight.chatCount}</div><div style={{fontSize:11,color:T.text3,marginTop:2}}>Linked sessions</div></div>
+          <div style={{padding:"10px 12px",borderRadius:8,border:"1px solid "+T.border,background:T.bg2}}><div style={{fontSize:11,color:T.text3,marginBottom:4}}>Updated</div><div style={{fontSize:18,fontWeight:700}}>{selectedInsight.latestDocumentUpdatedAt ? new Date(selectedInsight.latestDocumentUpdatedAt*1000).toLocaleDateString([],{month:"short",day:"numeric",year:"numeric"}) : "—"}</div><div style={{fontSize:11,color:T.text3,marginTop:2}}>Latest document change</div></div>
+        </div>
+      )}
       <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",flexShrink:0}}>
         {props.cols.map(c=>(
           <div key={c.id} style={{padding:"8px 12px",borderRadius:8,cursor:"pointer",fontSize:13,background:c.id===props.activeColId?"rgba(99,102,241,0.15)":T.bg2,border:c.id===props.activeColId?"1px solid rgba(99,102,241,0.4)":"1px solid "+T.border,display:"flex",alignItems:"center",gap:8}}>
             <div onClick={()=>props.onSelectCol(c.id)} style={{flex:1}}>
               <div style={{fontWeight:600,marginBottom:2,color:T.text}}>{c.name}</div>
-              <div style={{fontSize:11,color:T.text3}}>{c.docCount} Documents</div>
+              <div style={{fontSize:11,color:T.text3}}>{c.docCount} Documents{(() => { const insight = props.insights.find(i => i.id === c.id); return insight ? ` · ${insight.chunkCount} chunks` : ""; })()}</div>
             </div>
             <button onClick={e=>{e.stopPropagation();props.onDeleteCol(c.id)}} style={{background:"none",border:"none",cursor:"pointer",color:"rgba(239,68,68,0.5)",padding:2,flexShrink:0}}><I.Trash/></button>
           </div>
@@ -62,6 +75,15 @@ export function CollectionsPanel(props:CollectionsPanelProps){
         <button onClick={props.onCreateCol} style={{padding:"8px 16px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,color:"#fff",background:"rgba(99,102,241,0.8)"}}>+ Create</button>
       </div>
 
+      <IngestQueuePanel
+        jobs={props.incompleteJobs}
+        isIngesting={props.isIngesting}
+        onResumeAll={props.onResumeIncomplete}
+        onDiscardAll={props.onDiscardIncomplete}
+        onDiscardJob={props.onDiscardIncompleteJob}
+        onRefresh={props.onRefreshIncomplete}
+        theme={props.theme}
+      />
       {/* Document table + content preview */}
       <div style={{display:"flex",gap:16,flexWrap:"wrap",alignContent:"flex-start",minHeight:0}}>
         {/* Left: Sortable document table */}

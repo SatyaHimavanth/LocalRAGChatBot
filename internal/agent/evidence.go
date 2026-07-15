@@ -1,15 +1,62 @@
 package agent
 
 import (
-	"fmt"
 	"strings"
-	"sync"
 	"time"
 )
 
 // EvidenceEffort controls how aggressively the agent should gather evidence.
-// It intentionally refers to the retrieval/evidence pipeline, not model reasoning.
+// It refers to retrieval/evidence construction, not hidden model reasoning.
 type EvidenceEffort string
+
+// RetrievalScope controls whether the agent should search the active collection
+// or the entire library of collections for a turn.
+type RetrievalScope string
+
+const (
+	RetrievalScopeCurrent RetrievalScope = "current"
+	RetrievalScopeAll     RetrievalScope = "all"
+)
+
+// NormalizeRetrievalScope converts an arbitrary string into a supported scope.
+func NormalizeRetrievalScope(raw string) RetrievalScope {
+	switch RetrievalScope(strings.ToLower(strings.TrimSpace(raw))) {
+	case RetrievalScopeAll:
+		return RetrievalScopeAll
+	default:
+		return RetrievalScopeCurrent
+	}
+}
+
+// String returns the stable wire value.
+func (s RetrievalScope) String() string {
+	switch s {
+	case RetrievalScopeAll:
+		return "all"
+	default:
+		return "current"
+	}
+}
+
+// Label returns a human-friendly label for the UI.
+func (s RetrievalScope) Label() string {
+	switch s {
+	case RetrievalScopeAll:
+		return "All collections"
+	default:
+		return "Current collection"
+	}
+}
+
+// Guidance returns a short instruction line for the system prompt.
+func (s RetrievalScope) Guidance() string {
+	switch s {
+	case RetrievalScopeAll:
+		return "Retrieval scope is set to all collections. Search across the full knowledge base when the question may span multiple collections."
+	default:
+		return "Retrieval scope is limited to the active collection. Prefer the current collection unless the user clearly requests broader search."
+	}
+}
 
 const (
 	EvidenceEffortLow    EvidenceEffort = "low"
@@ -149,8 +196,7 @@ func (e EvidenceEffort) MaxEvidenceLatency() time.Duration {
 	}
 }
 
-// CoverageThreshold is the minimum acceptable coverage before we stop
-// expanding the evidence bundle.
+// CoverageThreshold is the minimum acceptable coverage before we stop expanding.
 func (e EvidenceEffort) CoverageThreshold() float64 {
 	switch e {
 	case EvidenceEffortLow:
@@ -172,124 +218,4 @@ func (e EvidenceEffort) Guidance() string {
 	default:
 		return "Evidence effort is medium. Balance speed and coverage with a moderately broad evidence bundle."
 	}
-}
-
-// Agent ties persona, tools and planner together.
-// It intentionally stays lightweight so the app can swap models without
-// changing the high-level chat programming model.
-type Agent struct {
-	Persona Persona
-	Tools   []ToolSpec
-	Planner Planner
-
-	mu sync.RWMutex
-}
-
-// Option configures an Agent.
-type Option func(*Agent)
-
-// New builds an agent with sensible defaults.
-func New(opts ...Option) *Agent {
-	a := &Agent{
-		Persona: DefaultPersona(),
-		Tools:   DefaultTools(),
-		Planner: NewHeuristicPlanner(),
-	}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(a)
-		}
-	}
-	if a.Planner == nil {
-		a.Planner = NewHeuristicPlanner()
-	}
-	if len(a.Tools) == 0 {
-		a.Tools = DefaultTools()
-	}
-	return a
-}
-
-// WithPersona overrides the default persona.
-func WithPersona(p Persona) Option {
-	return func(a *Agent) { a.Persona = p }
-}
-
-// WithTools overrides the default capability list.
-func WithTools(tools []ToolSpec) Option {
-	return func(a *Agent) { a.Tools = append([]ToolSpec(nil), tools...) }
-}
-
-// WithPlanner overrides the default planner.
-func WithPlanner(planner Planner) Option {
-	return func(a *Agent) { a.Planner = planner }
-}
-
-// DefaultTools returns the first capabilities the agent should be aware of.
-func DefaultTools() []ToolSpec {
-	return []ToolSpec{
-		{
-			Name:        "retrieve_documents",
-			Description: "Search the active collection, expand neighboring chunks, and return grounded evidence for the answer.",
-			Schema:      `{"query":"string","collectionId":"number","effort":"low|medium|high","limit":"number"}`,
-		},
-		{
-			Name:        "conversation_history",
-			Description: "Inspect recent conversation turns, previous questions, and branch context before answering follow-ups.",
-			Schema:      `{"sessionId":"number","branchId":"number","limit":"number"}`,
-		},
-		{
-			Name:        "workspace_memory",
-			Description: "Review workspace memory such as recent uploads, open documents, and prior app context.",
-			Schema:      `{"sessionId":"number","collectionId":"number"}`,
-		},
-	}
-}
-
-// Decide returns the plan for a request.
-func (a *Agent) Decide(req Request) Plan {
-	a.mu.RLock()
-	planner := a.Planner
-	persona := a.Persona
-	tools := append([]ToolSpec(nil), a.Tools...)
-	a.mu.RUnlock()
-	if planner == nil {
-		planner = NewHeuristicPlanner()
-	}
-	return planner.Decide(req, persona, tools)
-}
-
-// RenderSystemPrompt composes the system prompt from persona, tools and state.
-func (a *Agent) RenderSystemPrompt(plan Plan, collectionName string, docContext string, workspaceMemory string, evidenceSummary string) string {
-	a.mu.RLock()
-	persona := a.Persona
-	tools := append([]ToolSpec(nil), a.Tools...)
-	a.mu.RUnlock()
-	return persona.RenderSystemPrompt(plan, tools, collectionName, docContext, workspaceMemory, evidenceSummary)
-}
-
-// ToolPrompt returns a compact tool overview suitable for the system prompt.
-func ToolPrompt(tools []ToolSpec) string {
-	if len(tools) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("Available capabilities:\n")
-	for _, tool := range tools {
-		name := strings.TrimSpace(tool.Name)
-		if name == "" {
-			continue
-		}
-		b.WriteString("- ")
-		b.WriteString(name)
-		if d := strings.TrimSpace(tool.Description); d != "" {
-			b.WriteString(": ")
-			b.WriteString(d)
-		}
-		if schema := strings.TrimSpace(tool.Schema); schema != "" {
-			b.WriteString("\n  schema: ")
-			b.WriteString(schema)
-		}
-		b.WriteByte('\n')
-	}
-	return strings.TrimSpace(b.String())
 }

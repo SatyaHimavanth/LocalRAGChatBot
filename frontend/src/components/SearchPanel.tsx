@@ -42,6 +42,13 @@ export function SearchPanel(props:SearchPanelProps){
               <span><strong>{props.displayScore(r.score)}%</strong> match</span>
               <span>in "{r.collectionName}"</span>
             </div>
+            {(r.title || r.sectionPath || r.chunkSummary) && (
+              <div style={{fontSize:11,color:T.text3,marginBottom:6,lineHeight:1.45}}>
+                {r.title && <div style={{fontWeight:600,color:T.text,marginBottom:2}}>{r.title}</div>}
+                {r.sectionPath && <div>{r.sectionPath}</div>}
+                {r.chunkSummary && <div style={{marginTop:2}}>{r.chunkSummary}</div>}
+              </div>
+            )}
             <div style={{fontSize:13,lineHeight:1.5,color:T.text}}>{r.content}</div>
           </div>
         ))}

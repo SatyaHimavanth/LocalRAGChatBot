@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -356,8 +355,10 @@ func (s *ChatService) stageOne(f IngestFilePayload, collectionID int64, batchID 
 		return StageResult{Filename: filename, Status: "error", Message: "No extractable text found"}
 	}
 
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(text)))
-	chunks := ingest.SplitText(text, chunkSize, chunkOverlap)
+	profile := ingest.BuildDocumentProfile(filename, text)
+	text = profile.NormalizedText
+	hash := profile.ContentHash
+	chunks, _ := ingest.BuildChunkSpecs(filename, text, chunkSize, chunkOverlap)
 	if len(chunks) == 0 {
 		return StageResult{Filename: filename, Status: "error", Message: "No content to ingest"}
 	}
@@ -384,6 +385,9 @@ func (s *ChatService) stageOne(f IngestFilePayload, collectionID int64, batchID 
 		if err := store.UpdateDocumentContent(s.DB, existing.ID, text, hash); err != nil {
 			return StageResult{Filename: filename, Status: "error", Message: "Failed to update document content"}
 		}
+		if err := store.UpdateDocumentSummary(s.DB, existing.ID, profile.Summary); err != nil {
+			return StageResult{Filename: filename, Status: "error", Message: "Failed to update document summary"}
+		}
 		if err := store.UpdateDocumentIngest(s.DB, existing.ID, store.DocStatusQueued, expected, batchID, ""); err != nil {
 			return StageResult{Filename: filename, Status: "error", Message: "Failed to queue document"}
 		}
@@ -397,6 +401,9 @@ func (s *ChatService) stageOne(f IngestFilePayload, collectionID int64, batchID 
 	docID, err := store.AddDocumentWithStatus(s.DB, collectionID, filename, hash, text, store.DocStatusQueued, batchID, expected)
 	if err != nil {
 		return StageResult{Filename: filename, Status: "error", Message: fmt.Sprintf("Registering document: %v", err)}
+	}
+	if err := store.UpdateDocumentSummary(s.DB, docID, profile.Summary); err != nil {
+		return StageResult{Filename: filename, Status: "error", Message: "Failed to save document summary"}
 	}
 	return StageResult{Filename: filename, Status: "staged", Message: "Queued for embedding", DocID: docID}
 }
@@ -464,7 +471,7 @@ func (s *ChatService) embedResumable(ctx context.Context, batchID string) (compl
 func (s *ChatService) embedOneDocument(ctx context.Context, doc *store.Document, docIndex, docTotal int) error {
 	_ = store.UpdateDocumentStatus(s.DB, doc.ID, store.DocStatusEmbedding, "")
 
-	chunks := ingest.SplitText(doc.Content, chunkSize, chunkOverlap)
+	chunks, profile := ingest.BuildChunkSpecs(doc.Filename, doc.Content, chunkSize, chunkOverlap)
 	total := len(chunks)
 	if total == 0 {
 		return fmt.Errorf("no content to embed")
@@ -473,6 +480,7 @@ func (s *ChatService) embedOneDocument(ctx context.Context, doc *store.Document,
 		_ = store.UpdateDocumentIngest(s.DB, doc.ID, store.DocStatusEmbedding, total, doc.BatchID, "")
 		doc.ExpectedChunks = total
 	}
+	_ = store.UpdateDocumentSummary(s.DB, doc.ID, profile.Summary)
 
 	s.emit("ingest:progress", map[string]any{
 		"phase": "embedding", "step": "chunked",
@@ -510,7 +518,15 @@ func (s *ChatService) embedOneDocument(ctx context.Context, doc *store.Document,
 		if err != nil {
 			return fmt.Errorf("embedding chunk %d: %w", i+1, err)
 		}
-		if _, err := store.InsertChunk(s.DB, doc.ID, doc.CollectionID, chunk.Content, chunk.Ord, embedding); err != nil {
+		if _, err := store.InsertChunkWithMetadata(s.DB, doc.ID, doc.CollectionID, chunk.Content, chunk.Ord, store.ChunkMetadata{
+			Title:        chunk.Title,
+			SectionPath:  chunk.SectionPath,
+			HeadingLevel: chunk.HeadingLevel,
+			Summary:      chunk.Summary,
+			ContentHash:  chunk.ContentHash,
+			TokenCount:   chunk.TokenCount,
+			CharCount:    chunk.CharCount,
+		}, embedding); err != nil {
 			return fmt.Errorf("inserting chunk %d: %w", i+1, err)
 		}
 
@@ -532,6 +548,9 @@ func (s *ChatService) embedOneDocument(ctx context.Context, doc *store.Document,
 	}
 	if cnt < total {
 		return fmt.Errorf("incomplete: %d/%d chunks written", cnt, total)
+	}
+	if err := store.UpdateChunkNeighbors(s.DB, doc.ID); err != nil {
+		return err
 	}
 	return store.UpdateDocumentStatus(s.DB, doc.ID, store.DocStatusReady, "")
 }

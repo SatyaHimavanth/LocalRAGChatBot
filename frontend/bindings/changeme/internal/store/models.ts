@@ -29,6 +29,18 @@ export interface Collection {
     "createdAt": number;
 }
 
+export interface CollectionInsight {
+    "id": number;
+    "name": string;
+    "createdAt": number;
+    "totalDocumentCount": number;
+    "readyDocumentCount": number;
+    "incompleteDocumentCount": number;
+    "chunkCount": number;
+    "chatCount": number;
+    "latestDocumentUpdatedAt": number;
+}
+
 export interface Document {
     "id": number;
     "collectionId": number;

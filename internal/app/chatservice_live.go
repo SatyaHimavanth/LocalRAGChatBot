@@ -230,6 +230,32 @@ func (s *ChatService) GetChatMessages(sessionID int64) ([]store.ChatMessage, err
 	return store.GetChatMessages(s.DB, sessionID)
 }
 
+func (s *ChatService) GetChatMessagesFlat(sessionID int64) ([]store.ChatMessage, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	return store.GetChatMessagesFlat(s.DB, sessionID)
+}
+
+func (s *ChatService) SetChatCurrentLeafMessage(sessionID, leafMessageID int64) error {
+	if s.DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if leafMessageID < 0 {
+		return fmt.Errorf("invalid leaf message id")
+	}
+	if leafMessageID > 0 {
+		msg, err := store.GetChatMessageByID(s.DB, sessionID, leafMessageID)
+		if err != nil {
+			return fmt.Errorf("validating branch leaf: %w", err)
+		}
+		if msg == nil {
+			return fmt.Errorf("message %d not found in session", leafMessageID)
+		}
+	}
+	return store.SetSessionLeafMessageID(s.DB, sessionID, leafMessageID)
+}
+
 func (s *ChatService) DeleteChat(sessionID int64) error {
 	if s.DB == nil {
 		return fmt.Errorf("database not initialized")
@@ -287,50 +313,60 @@ func (s *ChatService) CancelGeneration(sessionID int64) error {
 //  Messaging
 
 type AgentResponseMeta struct {
-	Cancelled      bool   `json:"cancelled"`
-	UsedRetrieval  bool   `json:"usedRetrieval"`
-	UsedMemory     bool   `json:"usedMemory"`
-	UsedDirect     bool   `json:"usedDirect"`
-	SourceCount    int    `json:"sourceCount"`
-	Reason         string `json:"reason,omitempty"`
-	RetrievalQuery string `json:"retrievalQuery,omitempty"`
-	TopK           int    `json:"topK,omitempty"`
+	Cancelled            bool     `json:"cancelled"`
+	UsedRetrieval        bool     `json:"usedRetrieval"`
+	UsedMemory           bool     `json:"usedMemory"`
+	UsedWorkspaceMemory  bool     `json:"usedWorkspaceMemory"`
+	UsedDirect           bool     `json:"usedDirect"`
+	SourceCount          int      `json:"sourceCount"`
+	EvidenceEffort       string   `json:"evidenceEffort,omitempty"`
+	EvidenceCoverage     float64  `json:"evidenceCoverage,omitempty"`
+	EvidencePasses       int      `json:"evidencePasses,omitempty"`
+	EvidenceCandidates   int      `json:"evidenceCandidates,omitempty"`
+	EvidenceExpanded     int      `json:"evidenceExpanded,omitempty"`
+	EvidenceCompressed   int      `json:"evidenceCompressed,omitempty"`
+	EvidenceTokens       int      `json:"evidenceTokens,omitempty"`
+	EvidenceBudgetTokens int      `json:"evidenceBudgetTokens,omitempty"`
+	EvidenceTimeBudgetMS int64    `json:"evidenceTimeBudgetMs,omitempty"`
+	EvidenceSummary      string   `json:"evidenceSummary,omitempty"`
+	VerificationScore    float64  `json:"verificationScore,omitempty"`
+	VerificationVerdict  string   `json:"verificationVerdict,omitempty"`
+	VerificationSummary  string   `json:"verificationSummary,omitempty"`
+	VerificationIssues   []string `json:"verificationIssues,omitempty"`
+	Reason               string   `json:"reason,omitempty"`
+	RetrievalQuery       string   `json:"retrievalQuery,omitempty"`
+	RetrievalScope       string   `json:"retrievalScope,omitempty"`
+	TopK                 int      `json:"topK,omitempty"`
 }
 
-const branchPromptPrefix = "[[branch-parent:"
-
-func encodeBranchPrompt(parentMessageID int64, prompt string) string {
-	return fmt.Sprintf("[[branch-parent:%d]]\n%s", parentMessageID, prompt)
-}
-
-func extractBranchPrompt(prompt string) (string, int64) {
-	trimmed := strings.TrimSpace(prompt)
-	if !strings.HasPrefix(trimmed, branchPromptPrefix) {
-		return prompt, 0
-	}
-	end := strings.Index(trimmed, "]]\n")
-	if end == -1 {
-		return prompt, 0
-	}
-	idStr := strings.TrimPrefix(trimmed[:end], branchPromptPrefix)
-	parentID, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		return prompt, 0
-	}
-	return strings.TrimSpace(trimmed[end+3:]), parentID
-}
 func (m AgentResponseMeta) asMap(sessionID, msgID int64) map[string]any {
 	return map[string]any{
-		"sessionId":      sessionID,
-		"msgId":          msgID,
-		"cancelled":      m.Cancelled,
-		"usedRetrieval":  m.UsedRetrieval,
-		"usedMemory":     m.UsedMemory,
-		"usedDirect":     m.UsedDirect,
-		"sourceCount":    m.SourceCount,
-		"reason":         m.Reason,
-		"retrievalQuery": m.RetrievalQuery,
-		"topK":           m.TopK,
+		"sessionId":            sessionID,
+		"msgId":                msgID,
+		"cancelled":            m.Cancelled,
+		"usedRetrieval":        m.UsedRetrieval,
+		"usedMemory":           m.UsedMemory,
+		"usedWorkspaceMemory":  m.UsedWorkspaceMemory,
+		"usedDirect":           m.UsedDirect,
+		"sourceCount":          m.SourceCount,
+		"evidenceEffort":       m.EvidenceEffort,
+		"evidenceCoverage":     m.EvidenceCoverage,
+		"evidencePasses":       m.EvidencePasses,
+		"evidenceCandidates":   m.EvidenceCandidates,
+		"evidenceExpanded":     m.EvidenceExpanded,
+		"evidenceCompressed":   m.EvidenceCompressed,
+		"evidenceTokens":       m.EvidenceTokens,
+		"evidenceBudgetTokens": m.EvidenceBudgetTokens,
+		"evidenceTimeBudgetMs": m.EvidenceTimeBudgetMS,
+		"evidenceSummary":      m.EvidenceSummary,
+		"verificationScore":    m.VerificationScore,
+		"verificationVerdict":  m.VerificationVerdict,
+		"verificationSummary":  m.VerificationSummary,
+		"verificationIssues":   m.VerificationIssues,
+		"reason":               m.Reason,
+		"retrievalQuery":       m.RetrievalQuery,
+		"retrievalScope":       m.RetrievalScope,
+		"topK":                 m.TopK,
 	}
 }
 
@@ -342,7 +378,7 @@ func (m AgentResponseMeta) json() string {
 	return string(b)
 }
 
-func (s *ChatService) startConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64) (int64, error) {
+func (s *ChatService) startConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64, effort agent.EvidenceEffort) (int64, error) {
 	if s.app == nil {
 		s.app = application.Get()
 	}
@@ -375,13 +411,17 @@ func (s *ChatService) startConversationTurn(sessionID int64, collectionID int64,
 		return userMsgID, nil
 	}
 
-	go s.runConversationTurn(sessionID, collectionID, prompt, parentMessageID, userMsgID)
+	go s.runConversationTurn(sessionID, collectionID, prompt, parentMessageID, userMsgID, effort)
 	return userMsgID, nil
 }
 
 func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt string) error {
-	cleanPrompt, parentMessageID := extractBranchPrompt(prompt)
-	_, err := s.startConversationTurn(sessionID, collectionID, cleanPrompt, parentMessageID)
+	cleanPrompt, parentMessageID, effort, scope := extractTurnControls(prompt)
+	effectiveCollectionID := collectionID
+	if scope == agent.RetrievalScopeAll.String() {
+		effectiveCollectionID = 0
+	}
+	_, err := s.startConversationTurn(sessionID, effectiveCollectionID, cleanPrompt, parentMessageID, effort)
 	return err
 }
 
@@ -396,14 +436,21 @@ func (s *ChatService) emitAgentPlan(sessionID int64, plan agent.Plan) {
 		intent = "conversation"
 	}
 	s.emit("chat:plan", map[string]any{
-		"sessionId":      sessionID,
-		"intent":         intent,
-		"useRetrieval":   plan.UseRetrieval,
-		"useMemory":      plan.UseMemory,
-		"useDirect":      plan.UseDirect,
-		"topK":           plan.TopK,
-		"retrievalQuery": plan.RetrievalQuery,
-		"reason":         plan.Reason,
+		"sessionId":              sessionID,
+		"intent":                 intent,
+		"useRetrieval":           plan.UseRetrieval,
+		"useMemory":              plan.UseMemory,
+		"useWorkspaceMemory":     plan.UseWorkspaceMemory,
+		"useDirect":              plan.UseDirect,
+		"topK":                   plan.TopK,
+		"evidenceEffort":         plan.EvidenceEffort.String(),
+		"evidenceCandidateLimit": plan.EvidenceCandidateLimit,
+		"evidencePasses":         plan.EvidencePasses,
+		"evidenceTokenBudget":    plan.EvidenceTokenBudget,
+		"evidenceCoverageTarget": plan.EvidenceCoverageTarget,
+		"evidenceTimeBudgetMs":   plan.EvidenceTimeBudgetMS,
+		"retrievalQuery":         plan.RetrievalQuery,
+		"reason":                 plan.Reason,
 	})
 }
 
@@ -428,7 +475,7 @@ func (s *ChatService) persistCancelledMessage(sessionID int64, parentMessageID i
 	s.emit("chat:done", meta.asMap(sessionID, cancelledMsgID))
 }
 
-func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64, userMessageID int64) {
+func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64, userMessageID int64, effort agent.EvidenceEffort) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancelMu.Lock()
 	s.cancelFuncs[sessionID] = cancel
@@ -436,7 +483,7 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 
 	var msgID int64
 	var doneEmitted bool
-	meta := AgentResponseMeta{UsedDirect: true}
+	meta := AgentResponseMeta{UsedDirect: true, EvidenceEffort: effort.String()}
 	defer func() {
 		cancel()
 		if doneEmitted {
@@ -482,11 +529,13 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 		CollectionID:   collectionID,
 		CollectionName: s.getCollectionName(collectionID),
 		HasDocuments:   s.DB != nil,
+		Effort:         effort,
 	})
 
 	meta.UsedRetrieval = plan.UseRetrieval
 	meta.UsedMemory = plan.UseMemory
-	meta.UsedDirect = !plan.UseRetrieval && !plan.UseMemory
+	meta.UsedWorkspaceMemory = plan.UseWorkspaceMemory
+	meta.UsedDirect = !plan.UseRetrieval && !plan.UseMemory && !plan.UseWorkspaceMemory
 	meta.RetrievalQuery = plan.RetrievalQuery
 	meta.TopK = plan.TopK
 	meta.Reason = plan.Reason
@@ -501,19 +550,46 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 	}
 
 	var chunks []store.ScoredChunk
+	evidenceSummary := ""
 	if plan.UseRetrieval && s.DB != nil {
 		query := strings.TrimSpace(plan.RetrievalQuery)
 		if query == "" {
 			query = prompt
 		}
 		meta.RetrievalQuery = query
-		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "searching", "label": "Searching documents..."})
-		queryEmb, err := s.Engine.Embed(query)
-		if err == nil {
-			chunks, err = store.HybridSearch(s.DB, collectionID, query, queryEmb, plan.TopK)
-			if err != nil {
-				chunks = nil
-			}
+		report := s.buildEvidenceBundle(ctx, sessionID, collectionID, query, history, effort, plan)
+		chunks = report.Chunks
+		meta.RetrievalQuery = report.Query
+		meta.EvidenceCoverage = report.Stats.Coverage
+		meta.EvidencePasses = report.Stats.Passes
+		meta.EvidenceCandidates = report.Stats.CandidateCount
+		meta.EvidenceExpanded = report.Stats.ExpandedCount
+		meta.EvidenceCompressed = report.Stats.CompressedCount
+		meta.EvidenceTokens = report.Stats.EstimatedTokens
+		meta.EvidenceBudgetTokens = report.Stats.TokenBudget
+		meta.EvidenceTimeBudgetMS = report.Stats.TimeBudgetMS
+		evidenceSummary = report.Summary
+		s.emit("chat:evidence", map[string]any{
+			"sessionId":       sessionID,
+			"query":           report.Query,
+			"summary":         report.Summary,
+			"coverage":        report.Stats.Coverage,
+			"passes":          report.Stats.Passes,
+			"candidateCount":  report.Stats.CandidateCount,
+			"expandedCount":   report.Stats.ExpandedCount,
+			"compressedCount": report.Stats.CompressedCount,
+			"finalCount":      report.Stats.FinalCount,
+			"tokenBudget":     report.Stats.TokenBudget,
+			"estimatedTokens": report.Stats.EstimatedTokens,
+			"timeBudgetMs":    report.Stats.TimeBudgetMS,
+			"preview":         s.evidencePreview(report.Chunks, collectionID),
+		})
+	}
+	workspaceMemory := ""
+	if plan.UseWorkspaceMemory || plan.UseMemory {
+		workspaceMemory = s.buildWorkspaceMemory(sessionID, collectionID)
+		if workspaceMemory != "" {
+			meta.UsedWorkspaceMemory = true
 		}
 	}
 	meta.SourceCount = len(chunks)
@@ -545,7 +621,7 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 	s.emit("chat:thinking:done", map[string]any{"sessionId": sessionID})
 
 	ctxSize := getOptimalContextSize()
-	messages, sourceRefs := buildMessagesWithBudget(ag, plan, chunks, prompt, history, ctxSize, s.getCollectionName(collectionID))
+	messages, sourceRefs := buildMessagesWithBudget(ag, plan, effort, chunks, prompt, history, ctxSize, s.getCollectionName(collectionID), workspaceMemory, evidenceSummary)
 
 	chatCtx, err := s.Engine.ChatModel.NewContext(llama.WithContext(ctxSize))
 	if err != nil {
@@ -565,8 +641,17 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 		case delta, ok := <-deltas:
 			if !ok {
 				if s.DB != nil && fullResponse.Len() > 0 {
+					responseText := fullResponse.String()
+					report := s.verifyAnswer(prompt, responseText, chunks, meta, plan)
+					meta.VerificationScore = report.Confidence
+					meta.VerificationVerdict = report.Verdict
+					meta.VerificationSummary = report.Summary
+					meta.VerificationIssues = report.Issues
 					assistantMetaJSON := meta.json()
-					msgID, err = store.AddChatMessage(s.DB, sessionID, "assistant", fullResponse.String(), userMessageID, assistantMetaJSON)
+					msgID, err = store.AddChatMessage(s.DB, sessionID, "assistant", responseText, userMessageID, assistantMetaJSON)
+					if err == nil {
+						s.refreshWorkspaceMemoryForTurn(sessionID)
+					}
 					if err == nil && len(sourceRefs) > 0 {
 						colName := s.getCollectionName(collectionID)
 						for _, sr := range sourceRefs {
@@ -778,6 +863,9 @@ type SearchResult struct {
 	CollectionID   int64   `json:"collectionId"`
 	CollectionName string  `json:"collectionName"`
 	Filename       string  `json:"filename"`
+	Title          string  `json:"title,omitempty"`
+	SectionPath    string  `json:"sectionPath,omitempty"`
+	ChunkSummary   string  `json:"chunkSummary,omitempty"`
 	ChunkID        int64   `json:"chunkId"`
 }
 
@@ -865,18 +953,21 @@ func (s *ChatService) searchCollection(query string, queryEmb []float32, collect
 
 	for rank, r := range kwResults {
 		fn := s.getChunkFilename(r.ChunkID)
+		title, section, summary := s.getChunkPreviewMeta(r.ChunkID)
 		ns := normalizeBM25Score(r.Score)
 		merged[r.ChunkID] = &scored{
 			sr: SearchResult{
 				Content: r.Content, Score: ns, SearchType: "keyword",
 				CollectionID:   collectionID,
-				CollectionName: colName, Filename: fn, ChunkID: r.ChunkID,
+				CollectionName: colName, Filename: fn, Title: title, SectionPath: section, ChunkSummary: summary,
+				ChunkID: r.ChunkID,
 			},
 			rrf: 1.0 / float64(k+rank+1),
 		}
 	}
 	for rank, r := range vecResults {
 		fn := s.getChunkFilename(r.ChunkID)
+		title, section, summary := s.getChunkPreviewMeta(r.ChunkID)
 		vecNorm := normalizeDistanceScore(r.Score)
 		if existing, ok := merged[r.ChunkID]; ok {
 			existing.rrf += 1.0 / float64(k+rank+1)
@@ -884,12 +975,22 @@ func (s *ChatService) searchCollection(query string, queryEmb []float32, collect
 			if vecNorm > existing.sr.Score {
 				existing.sr.Score = vecNorm
 			}
+			if existing.sr.Title == "" {
+				existing.sr.Title = title
+			}
+			if existing.sr.SectionPath == "" {
+				existing.sr.SectionPath = section
+			}
+			if existing.sr.ChunkSummary == "" {
+				existing.sr.ChunkSummary = summary
+			}
 		} else {
 			merged[r.ChunkID] = &scored{
 				sr: SearchResult{
 					Content: r.Content, Score: vecNorm, SearchType: "vector",
 					CollectionID:   collectionID,
-					CollectionName: colName, Filename: fn, ChunkID: r.ChunkID,
+					CollectionName: colName, Filename: fn, Title: title, SectionPath: section, ChunkSummary: summary,
+					ChunkID: r.ChunkID,
 				},
 				rrf: 1.0 / float64(k+rank+1),
 			}
@@ -1050,11 +1151,12 @@ type chunkRef struct {
 	chunk  store.ScoredChunk
 }
 
-func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, chunks []store.ScoredChunk, prompt string, history []llama.ChatMessage, ctxSize int, collectionName string) ([]llama.ChatMessage, []chunkRef) {
+func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, effort agent.EvidenceEffort, chunks []store.ScoredChunk, prompt string, history []llama.ChatMessage, ctxSize int, collectionName string, workspaceMemory string, evidenceSummary string) ([]llama.ChatMessage, []chunkRef) {
 	// Scale character budgets proportionally to context window size
 	ratio := float64(ctxSize) / float64(defaultContextSize)
-	scaledMaxTotal := int(float64(maxTotalChars) * ratio)
-	scaledMaxContext := int(float64(maxContextChars) * ratio)
+	effortMultiplier := effort.ContextMultiplier()
+	scaledMaxTotal := int(float64(maxTotalChars) * ratio * effortMultiplier)
+	scaledMaxContext := int(float64(maxContextChars) * ratio * effortMultiplier)
 
 	// Budget: leave 50% of context for the response itself
 	responseBudget := ctxSize * 2 // ~2 chars per token
@@ -1075,7 +1177,6 @@ func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, chunks []store.Sc
 			if contextBuilder.Len() > 0 {
 				break
 			}
-			// Truncate first chunk
 			trunc := chunk.Content
 			if len(trunc) > scaledMaxContext-20 {
 				trunc = trunc[:scaledMaxContext-20] + "..."
@@ -1090,20 +1191,15 @@ func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, chunks []store.Sc
 
 	systemPrompt := "You are a helpful AI assistant."
 	if ag != nil {
-		systemPrompt = ag.RenderSystemPrompt(plan, collectionName, contextBuilder.String())
+		systemPrompt = ag.RenderSystemPrompt(plan, collectionName, contextBuilder.String(), workspaceMemory, evidenceSummary)
 	}
 	if systemPrompt == "" {
 		systemPrompt = "You are a helpful AI assistant."
 	}
 
-	messages := []llama.ChatMessage{
-		{Role: "system", Content: systemPrompt},
-	}
+	messages := []llama.ChatMessage{{Role: "system", Content: systemPrompt}}
 
-	// Track remaining budget
 	remaining := promptBudget - len(systemPrompt) - len(prompt) - 50
-
-	// Include conversation history, respecting budget
 	if history != nil {
 		for _, h := range history {
 			if remaining <= 0 {
@@ -1119,8 +1215,6 @@ func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, chunks []store.Sc
 		}
 	}
 
-	// Add current user prompt
 	messages = append(messages, llama.ChatMessage{Role: "user", Content: prompt})
-
 	return messages, sourceRefs
 }

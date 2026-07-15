@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
@@ -202,6 +203,13 @@ func GetDocumentByID(db *sql.DB, docID int64) (*Document, error) {
 func UpdateDocumentContent(db *sql.DB, docID int64, content, hash string) error {
 	_, err := db.Exec(`UPDATE documents SET content = ?, hash = ?, updated_at = ? WHERE id = ?`,
 		content, hash, time.Now().Unix(), docID)
+	return err
+}
+
+// UpdateDocumentSummary stores an extracted document summary for workspace and analytics views.
+func UpdateDocumentSummary(db *sql.DB, docID int64, summary string) error {
+	_, err := db.Exec(`UPDATE documents SET summary = ?, updated_at = ? WHERE id = ?`,
+		strings.TrimSpace(summary), time.Now().Unix(), docID)
 	return err
 }
 

@@ -12,6 +12,18 @@ type Collection struct {
 	CreatedAt int64  `json:"createdAt"`
 }
 
+type CollectionInsight struct {
+	ID                      int64  `json:"id"`
+	Name                    string `json:"name"`
+	CreatedAt               int64  `json:"createdAt"`
+	TotalDocumentCount      int    `json:"totalDocumentCount"`
+	ReadyDocumentCount      int    `json:"readyDocumentCount"`
+	IncompleteDocumentCount int    `json:"incompleteDocumentCount"`
+	ChunkCount              int    `json:"chunkCount"`
+	ChatCount               int    `json:"chatCount"`
+	LatestDocumentUpdatedAt int64  `json:"latestDocumentUpdatedAt"`
+}
+
 // CreateCollection creates a new collection and returns its ID.
 func CreateCollection(db *sql.DB, name string) (int64, error) {
 	res, err := db.Exec("INSERT INTO collections (name, created_at) VALUES (?, ?)", name, time.Now().Unix())
@@ -79,4 +91,65 @@ func DeleteCollection(db *sql.DB, collectionID int64) error {
 		return err
 	}
 	return nil
+}
+
+// GetCollectionInsights returns richer per-collection analytics for UI dashboards.
+func GetCollectionInsights(db *sql.DB) ([]CollectionInsight, error) {
+	rows, err := db.Query(`
+		SELECT c.id, c.name, c.created_at,
+		       COALESCE(total.total_docs, 0),
+		       COALESCE(ready.ready_docs, 0),
+		       COALESCE(incomplete.incomplete_docs, 0),
+		       COALESCE(chunks.chunk_count, 0),
+		       COALESCE(chats.chat_count, 0),
+		       COALESCE(latest.latest_updated_at, 0)
+		FROM collections c
+		LEFT JOIN (
+			SELECT collection_id, COUNT(*) AS total_docs
+			FROM documents
+			GROUP BY collection_id
+		) total ON total.collection_id = c.id
+		LEFT JOIN (
+			SELECT collection_id, COUNT(*) AS ready_docs
+			FROM documents
+			WHERE status = 'ready' OR status IS NULL OR status = ''
+			GROUP BY collection_id
+		) ready ON ready.collection_id = c.id
+		LEFT JOIN (
+			SELECT collection_id, COUNT(*) AS incomplete_docs
+			FROM documents
+			WHERE status IS NOT NULL AND status != '' AND status != 'ready'
+			GROUP BY collection_id
+		) incomplete ON incomplete.collection_id = c.id
+		LEFT JOIN (
+			SELECT collection_id, COUNT(*) AS chunk_count
+			FROM chunks
+			GROUP BY collection_id
+		) chunks ON chunks.collection_id = c.id
+		LEFT JOIN (
+			SELECT collection_id, COUNT(*) AS chat_count
+			FROM chat_sessions
+			GROUP BY collection_id
+		) chats ON chats.collection_id = c.id
+		LEFT JOIN (
+			SELECT collection_id, MAX(COALESCE(updated_at, created_at, 0)) AS latest_updated_at
+			FROM documents
+			GROUP BY collection_id
+		) latest ON latest.collection_id = c.id
+		ORDER BY c.created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var insights []CollectionInsight
+	for rows.Next() {
+		var item CollectionInsight
+		if err := rows.Scan(&item.ID, &item.Name, &item.CreatedAt, &item.TotalDocumentCount, &item.ReadyDocumentCount, &item.IncompleteDocumentCount, &item.ChunkCount, &item.ChatCount, &item.LatestDocumentUpdatedAt); err != nil {
+			return nil, err
+		}
+		insights = append(insights, item)
+	}
+	return insights, rows.Err()
 }

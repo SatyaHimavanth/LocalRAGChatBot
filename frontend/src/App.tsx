@@ -1,14 +1,17 @@
 ﻿import { useState, useEffect, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { Events } from "@wailsio/runtime";
-import { SendMessage, IngestFile, CreateCollection, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, GetDocumentContent, GetSessionSources, CancelGeneration, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete } from "../bindings/changeme/internal/app/chatservice";
-import { Message, Chat, Collection, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob, AgentPlan, AgentResult } from "./types";
+import { SendMessage, IngestFile, CreateCollection, GetCollections, GetCollectionInsights, GetDiagnostics, CreateChat, GetChats, GetChatMessages, GetChatMessagesFlat, SetChatCurrentLeafMessage, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, GetDocumentContent, GetSessionSources, GetWorkspaceMemory, RefreshWorkspaceMemory, UpdateWorkspaceNotes, CancelGeneration, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete, DiscardIngestJob } from "../bindings/changeme/internal/app/chatservice";
+import { Message, Chat, Collection, CollectionInsight, DocRecord, SearchResult, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob, AgentPlan, AgentResult, EvidenceEffort, RetrievalScope, DiagnosticsSnapshot, WorkspaceMemorySnapshot } from "./types";
 import { I } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
 import { SearchPanel } from "./components/SearchPanel";
 import { CollectionsPanel } from "./components/CollectionsPanel";
 import { FileUploadModal } from "./components/FileUploadModal";
+import { BranchModal } from "./components/BranchModal";
+import { WorkspaceModal } from "./components/WorkspaceModal";
+import { DiagnosticsModal } from "./components/DiagnosticsModal";
 import { Modal, ConfirmModal } from "./components/Modal";
 import { Toast } from "./components/Toast";
 
@@ -27,8 +30,15 @@ const buildAgentPlan = (data: any): AgentPlan => ({
   intent: typeof data?.intent === "string" && data.intent.trim() ? data.intent : "unknown",
   useRetrieval: data?.useRetrieval === true,
   useMemory: data?.useMemory === true,
+  useWorkspaceMemory: data?.useWorkspaceMemory === true,
   useDirect: data?.useDirect === true,
   topK: Number(data?.topK ?? 0),
+  evidenceEffort: (data?.evidenceEffort === "low" || data?.evidenceEffort === "high") ? data.evidenceEffort : "medium",
+  evidenceCandidateLimit: Number(data?.evidenceCandidateLimit ?? 0) || undefined,
+  evidencePasses: Number(data?.evidencePasses ?? 0) || undefined,
+  evidenceTokenBudget: Number(data?.evidenceTokenBudget ?? 0) || undefined,
+  evidenceCoverageTarget: Number(data?.evidenceCoverageTarget ?? 0) || undefined,
+  evidenceTimeBudgetMs: Number(data?.evidenceTimeBudgetMs ?? 0) || undefined,
   retrievalQuery: typeof data?.retrievalQuery === "string" ? data.retrievalQuery : "",
   reason: typeof data?.reason === "string" ? data.reason : "",
 });
@@ -37,20 +47,50 @@ const buildAgentResult = (data: any): AgentResult => ({
   cancelled: data?.cancelled === true,
   usedRetrieval: data?.usedRetrieval === true,
   usedMemory: data?.usedMemory === true,
+  usedWorkspaceMemory: data?.usedWorkspaceMemory === true,
   usedDirect: data?.usedDirect === true,
   sourceCount: Number(data?.sourceCount ?? 0),
+  evidenceEffort: (data?.evidenceEffort === "low" || data?.evidenceEffort === "high") ? data.evidenceEffort : "medium",
+  evidenceCoverage: Number(data?.evidenceCoverage ?? 0) || undefined,
+  evidencePasses: Number(data?.evidencePasses ?? 0) || undefined,
+  evidenceCandidates: Number(data?.evidenceCandidates ?? 0) || undefined,
+  evidenceExpanded: Number(data?.evidenceExpanded ?? 0) || undefined,
+  evidenceCompressed: Number(data?.evidenceCompressed ?? 0) || undefined,
+  evidenceTokens: Number(data?.evidenceTokens ?? 0) || undefined,
+  evidenceBudgetTokens: Number(data?.evidenceBudgetTokens ?? 0) || undefined,
+  evidenceTimeBudgetMs: Number(data?.evidenceTimeBudgetMs ?? 0) || undefined,
+  evidenceSummary: typeof data?.evidenceSummary === "string" ? data.evidenceSummary : "",
+  verificationScore: Number(data?.verificationScore ?? 0) || undefined,
+  verificationVerdict: typeof data?.verificationVerdict === "string" ? data.verificationVerdict : "",
+  verificationSummary: typeof data?.verificationSummary === "string" ? data.verificationSummary : "",
+  verificationIssues: Array.isArray(data?.verificationIssues) ? data.verificationIssues.filter((v: any) => typeof v === "string") : undefined,
   reason: typeof data?.reason === "string" ? data.reason : "",
   retrievalQuery: typeof data?.retrievalQuery === "string" ? data.retrievalQuery : "",
   topK: Number(data?.topK ?? 0),
 });
 
 const summarizePlan = (plan: AgentPlan) => {
+  const effortLabel = plan.evidenceEffort === "high" ? "High effort" : plan.evidenceEffort === "low" ? "Low effort" : "Medium effort";
   if (plan.useRetrieval) {
-    return plan.retrievalQuery ? `Planning retrieval for "${plan.retrievalQuery}"` : "Planning retrieval...";
+    return plan.retrievalQuery ? `Planning retrieval (${effortLabel}) for "${plan.retrievalQuery}"` : `Planning retrieval (${effortLabel})...`;
   }
-  if (plan.useMemory) return "Planning from conversation memory...";
-  if (plan.useDirect) return "Planning direct answer...";
-  return "Planning...";
+  if (plan.useWorkspaceMemory) return `Planning from workspace memory (${effortLabel})...`;
+  if (plan.useMemory) return `Planning from conversation memory (${effortLabel})...`;
+  if (plan.useDirect) return `Planning direct answer (${effortLabel})...`;
+  return `Planning (${effortLabel})...`;
+};
+
+const summarizeEvidence = (data: any) => {
+  const coverage = Number(data?.coverage ?? 0);
+  const passes = Number(data?.passes ?? 0);
+  const candidateCount = Number(data?.candidateCount ?? 0);
+  const finalCount = Number(data?.finalCount ?? 0);
+  const preview = Array.isArray(data?.preview) ? data.preview.slice(0, 3).map((item: any) => {
+    const filename = typeof item?.filename === "string" && item.filename.trim() ? item.filename : `chunk ${item?.chunkId ?? "?"}`;
+    return filename;
+  }) : [];
+  const previewText = preview.length ? ` · ${preview.join(", ")}` : "";
+  return `Evidence ${finalCount} chunks • coverage ${Math.round(coverage * 100)}% • passes ${passes} • candidates ${candidateCount}${previewText}`;
 };
 
 const parseStoredAgentResult = (raw: any): AgentResult | undefined => {
@@ -64,7 +104,18 @@ const parseStoredAgentResult = (raw: any): AgentResult | undefined => {
   }
 };
 
-const encodeBranchPrompt = (parentMessageId: number, prompt: string) => `[[branch-parent:${parentMessageId}]]\n${prompt}`;
+const encodeTurnPrompt = (parentMessageId: number | undefined, effort: EvidenceEffort, retrievalScope: RetrievalScope, prompt: string) => {
+  const parts: string[] = [];
+  if (typeof parentMessageId === "number" && parentMessageId > 0) {
+    parts.push(`[[branch-parent:${parentMessageId}]]`);
+  }
+  if (effort) {
+    parts.push(`[[effort:${effort}]]`);
+  }
+  parts.push(`[[scope:${retrievalScope}]]`);
+  parts.push(prompt);
+  return parts.join("\n");
+};
 
 
 export default function App() {
@@ -79,12 +130,15 @@ export default function App() {
   const isArchived=activeChat?.archived===true;
   const createdInitialChat = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [evidenceEffort, setEvidenceEffort] = useState<EvidenceEffort>("medium");
+  const [retrievalScope, setRetrievalScope] = useState<RetrievalScope>("current");
 
   const [sq, setSq]=useState(""); const [sResults,setSResults]=useState<SearchResult[]>([]);
   const [sBusy,setSBusy]=useState(false); const [sDone,setSDone]=useState(false);
   const [searchFilter,setSearchFilter]=useState("all");
 
   const [cols,setCols]=useState<Collection[]>([]);
+  const [collectionInsights,setCollectionInsights]=useState<CollectionInsight[]>([]);
   const [activeColId,setActiveColId]=useState(1);
   const [newColName,setNewColName]=useState("");
   const [isIngesting, setIsIngesting] = useState(false);
@@ -96,6 +150,16 @@ export default function App() {
   const [incompleteJobs,setIncompleteJobs]=useState<IncompleteJob[]>([]);
   const closeUploadModal = () => { setShowUploadModal(false); loadCols(); loadDocs(activeColId); loadIncompleteJobs(); };
   const [showResumeModal, setShowResumeModal] = useState(false);
+  const [showBranchModal, setShowBranchModal] = useState(false);
+  const [branchMessages, setBranchMessages] = useState<any[]>([]);
+  const [branchLoading, setBranchLoading] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
+  const [showWorkspaceModal, setShowWorkspaceModal] = useState(false);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [workspaceSnapshot, setWorkspaceSnapshot] = useState<WorkspaceMemorySnapshot | null>(null);
+  const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
 
   const [toasts,setToasts]=useState<ToastMsg[]>([]);
   const addToast=useCallback((type:"success"|"error"|"info",message:string)=>{const id=crypto.randomUUID();setToasts(p=>[...p,{id,type,message}]);setTimeout(()=>setToasts(p=>p.filter(t=>t.id!==id)),5000)},[]);
@@ -181,6 +245,13 @@ useEffect(()=>{
     setChats(p => p.map(c => c.id === sid ? { ...c, agentPlan: plan } : c));
   });
 
+  const offEvidence = Events.On("chat:evidence", (e:any) => {
+    const sid = e?.data?.sessionId;
+    if (!sid) return;
+    const summary = summarizeEvidence(e?.data);
+    setStatusMsgs([{ id: crypto.randomUUID(), sender: "system", text: summary }]);
+  });
+
   const offD = Events.On("chat:done", (e:any) => {
     setGen(false);
     setStatusMsgs([]);
@@ -256,7 +327,7 @@ useEffect(()=>{
     }
   });
 
-  return () => { offT(); offMessageSaved(); offPlan(); offD(); offStatus(); offSources(); };
+  return () => { offT(); offMessageSaved(); offPlan(); offEvidence(); offD(); offStatus(); offSources(); };
 },[]);
 
 
@@ -313,7 +384,21 @@ useEffect(()=>{
 
   
 
-  const loadCols=async()=>{try{const c:any=await GetCollections();if(c?.length){setCols(c);setActiveColId(c[0].id)}}catch(e){console.error(e)}};
+  const loadCols = async () => {
+    try {
+      const [c, insights]: any = await Promise.all([GetCollections(), GetCollectionInsights().catch(() => [])]);
+      if (c?.length) {
+        setCols(c);
+        setActiveColId((current) => current && c.some((col: any) => col.id === current) ? current : c[0].id);
+      } else {
+        setCols([]);
+        setActiveColId(0);
+      }
+      setCollectionInsights(Array.isArray(insights) ? insights : []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
   const loadDocs=async(colId:number)=>{try{const d:any=await GetDocumentsByCollection(colId);setIdocs((d||[]).map((x:any)=>({
     id:x.id,collectionId:x.collectionId,filename:x.filename,hash:x.hash||"",content:x.content||"",createdAt:x.createdAt,
     chunkCount:x.chunkCount||0,status:x.status||"ready",expectedChunks:x.expectedChunks||0,batchId:x.batchId||"",
@@ -378,6 +463,110 @@ useEffect(()=>{
     }
   };
 
+  const openBranchModal = async () => {
+    if (!activeChatId) return;
+    setShowBranchModal(true);
+    setBranchLoading(true);
+    try {
+      const flat: any = await GetChatMessagesFlat(activeChatId);
+      setBranchMessages(Array.isArray(flat) ? flat : []);
+    } catch (e) {
+      console.error(e);
+      setBranchMessages([]);
+    } finally {
+      setBranchLoading(false);
+    }
+  };
+
+  const handleSelectBranch = async (leafMessageId: number) => {
+    if (!activeChatId || !leafMessageId) return;
+    try {
+      await SetChatCurrentLeafMessage(activeChatId, leafMessageId);
+      setShowBranchModal(false);
+      await loadChats();
+    } catch (e) {
+      addToast("error", getErrMsg(e));
+    }
+  };
+
+  const loadDiagnostics = useCallback(async () => {
+    setDiagnosticsLoading(true);
+    try {
+      const snap: any = await GetDiagnostics();
+      setDiagnostics(snap || null);
+      return snap || null;
+    } catch (e) {
+      console.error(e);
+      addToast("error", getErrMsg(e));
+      return null;
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  }, [addToast]);
+
+  const openDiagnosticsModal = useCallback(async () => {
+    setShowDiagnostics(true);
+    await loadDiagnostics();
+  }, [loadDiagnostics]);
+
+  const normalizeWorkspaceSnapshot = (data: any): WorkspaceMemorySnapshot | null => {
+    if (!data || typeof data !== "object") return null;
+    return {
+      sessionId: Number(data?.sessionId ?? 0) || 0,
+      collectionId: Number(data?.collectionId ?? 0) || 0,
+      collectionName: typeof data?.collectionName === "string" ? data.collectionName : "",
+      summary: typeof data?.summary === "string" ? data.summary : "",
+      notes: typeof data?.notes === "string" ? data.notes : "",
+      lastMessageId: Number(data?.lastMessageId ?? 0) || 0,
+      updatedAt: Number(data?.updatedAt ?? 0) || 0,
+      recentQuestions: Array.isArray(data?.recentQuestions) ? data.recentQuestions.filter((v: any) => typeof v === "string") : [],
+      recentDocuments: Array.isArray(data?.recentDocuments) ? data.recentDocuments.filter((v: any) => typeof v === "string") : [],
+      latestAssistant: typeof data?.latestAssistant === "string" ? data.latestAssistant : "",
+      latestSignal: typeof data?.latestSignal === "string" ? data.latestSignal : "",
+      hasSummary: data?.hasSummary === true,
+      hasNotes: data?.hasNotes === true,
+    };
+  };
+
+  const loadWorkspaceMemory = useCallback(async (sessionId?: number) => {
+    const sid = sessionId ?? activeChatId;
+    if (!sid) return null;
+    setWorkspaceLoading(true);
+    try {
+      const raw: any = await GetWorkspaceMemory(sid);
+      const snap = normalizeWorkspaceSnapshot(raw);
+      setWorkspaceSnapshot(snap);
+      setWorkspaceNotesDraft(snap?.notes || "");
+      return snap;
+    } catch (e) {
+      console.error(e);
+      addToast("error", getErrMsg(e));
+      setWorkspaceSnapshot(null);
+      setWorkspaceNotesDraft("");
+      return null;
+    } finally {
+      setWorkspaceLoading(false);
+    }
+  }, [activeChatId, addToast]);
+
+  const openWorkspaceModal = useCallback(async () => {
+    if (!activeChatId) return;
+    setShowWorkspaceModal(true);
+    await loadWorkspaceMemory(activeChatId);
+  }, [activeChatId, loadWorkspaceMemory]);
+
+  const saveWorkspaceNotes = useCallback(async () => {
+    if (!activeChatId) return;
+    try {
+      await UpdateWorkspaceNotes(activeChatId, workspaceNotesDraft);
+      await RefreshWorkspaceMemory(activeChatId);
+      await loadWorkspaceMemory(activeChatId);
+      addToast("success", "Workspace notes saved");
+    } catch (e) {
+      addToast("error", getErrMsg(e));
+    }
+  }, [activeChatId, workspaceNotesDraft, loadWorkspaceMemory, addToast]);
+
   const newChat = async () => {const empty=chats.find(c=>c.messages.length===0&&!c.archived);if(empty){setActiveChatId(empty.id);setTab("chat");return}try{const id=await CreateChat("New Chat",activeColId);setChats(p=>[{id,title:"New Chat",messages:[],createdAt:Date.now(),archived:false,pinned:false},...p]);setActiveChatId(id);setTab("chat")}catch(e){console.error(e)}};
 
   const submitPrompt = async (
@@ -416,7 +605,7 @@ useEffect(()=>{
       }
     }
 
-    const promptForBackend = options?.parentMessageId ? encodeBranchPrompt(options.parentMessageId, msg) : msg;
+    const promptForBackend = encodeTurnPrompt(options?.parentMessageId, evidenceEffort, retrievalScope, msg);
     setChats((p) =>
       p.map((c) =>
         c.id === tid
@@ -528,6 +717,18 @@ useEffect(()=>{
     }
   }, [activeColId, loadIncompleteJobs, addToast]);
 
+  const handleDiscardJob = useCallback(async (docId: number) => {
+    try {
+      await DiscardIngestJob(docId);
+      await loadIncompleteJobs();
+      loadDocs(activeColId);
+      loadCols();
+      addToast("info", "Discarded incomplete document");
+    } catch (e: any) {
+      addToast("error", getErrMsg(e));
+    }
+  }, [activeColId, loadIncompleteJobs, addToast]);
+
   const handleStopGeneration = useCallback(async () => {
     try { await CancelGeneration(activeChatId); } catch (e) { /* ignore */ }
     // Don't manipulate state here — the chat:done event handler
@@ -546,9 +747,9 @@ useEffect(()=>{
   const handlePinChat = async (chatId: number) => { setCtxMenuChatId(null); const chat = chats.find(c => c.id === chatId); if (!chat) return; if (chat.pinned) { try { await UnpinChat(chatId); setChats(p => p.map(c => c.id === chatId ? { ...c, pinned: false } : c)); } catch (e) { console.error(e); } } else { try { await PinChat(chatId); setChats(p => p.map(c => c.id === chatId ? { ...c, pinned: true } : c)); } catch (e) { console.error(e); } } };
   const confirmDeleteChat = (chatId: number) => { const chat = chats.find(c => c.id === chatId); setConfirm({ open: true, title: "Delete Chat", message: "Delete this chat?", detail: `"${chat?.title || 'New Chat'}" will be permanently deleted.`, confirmLabel: "Delete Chat", onConfirm: () => { handleDeleteChatAction(chatId); } }); };
 
-  const createCol = async () => { if (!newColName.trim()) return; try { const id = await CreateCollection(newColName); setCols(p => [...p, { id, name: newColName, docCount: 0 }]); setNewColName(""); setActiveColId(id); addToast("success", `Collection "${newColName}" created`); } catch (e: any) { addToast("error", getErrMsg(e)); } };
-  const confirmDeleteCollection = (colId: number) => { const col = cols.find(c => c.id === colId); setConfirm({ open: true, title: "Delete Collection", message: `Delete "${col?.name || 'Unknown'}"?`, detail: `Permanently delete collection and ${col?.docCount || 0} documents.`, confirmLabel: "Delete Collection", onConfirm: async () => { setConfirm({ open: false, title: "", message: "", detail: "", confirmLabel: "", onConfirm: () => {} }); try { await DeleteCollection(colId); setCols(p => p.filter(c => c.id !== colId)); if (activeColId === colId) setActiveColId(cols.filter(c => c.id !== colId)[0]?.id || 0); setIdocs([]); addToast("success", "Deleted"); } catch (e) { addToast("error", getErrMsg(e)); } } }); };
-  const confirmDeleteDocument = (docId: number) => { const doc = idocs.find(d => d.id === docId); setConfirm({ open: true, title: "Delete Document", message: `Delete "${doc?.filename || 'Unknown'}"?`, detail: "Permanently delete document and all chunks.", confirmLabel: "Delete Document", onConfirm: async () => { setConfirm({ open: false, title: "", message: "", detail: "", confirmLabel: "", onConfirm: () => {} }); try { await DeleteDocument(docId); setIdocs(p => p.filter(d => d.id !== docId)); setCols(p => p.map(c => c.id === activeColId ? { ...c, docCount: Math.max(0, c.docCount - 1) } : c)); addToast("success", "Deleted"); } catch (e) { addToast("error", getErrMsg(e)); } } }); };
+  const createCol = async () => { if (!newColName.trim()) return; try { await CreateCollection(newColName.trim()); setNewColName(""); await loadCols(); addToast("success", `Collection "${newColName.trim()}" created`); } catch (e: any) { addToast("error", getErrMsg(e)); } };
+  const confirmDeleteCollection = (colId: number) => { const col = cols.find(c => c.id === colId); setConfirm({ open: true, title: "Delete Collection", message: `Delete "${col?.name || 'Unknown'}"?`, detail: `Permanently delete collection and ${col?.docCount || 0} documents.`, confirmLabel: "Delete Collection", onConfirm: async () => { setConfirm({ open: false, title: "", message: "", detail: "", confirmLabel: "", onConfirm: () => {} }); try { await DeleteCollection(colId); await loadCols(); setIdocs([]); addToast("success", "Deleted"); } catch (e) { addToast("error", getErrMsg(e)); } } }); };
+  const confirmDeleteDocument = (docId: number) => { const doc = idocs.find(d => d.id === docId); setConfirm({ open: true, title: "Delete Document", message: `Delete "${doc?.filename || 'Unknown'}"?`, detail: "Permanently delete document and all chunks.", confirmLabel: "Delete Document", onConfirm: async () => { setConfirm({ open: false, title: "", message: "", detail: "", confirmLabel: "", onConfirm: () => {} }); try { await DeleteDocument(docId); await loadCols(); setIdocs(p => p.filter(d => d.id !== docId)); addToast("success", "Deleted"); } catch (e) { addToast("error", getErrMsg(e)); } } }); };
 
   const doSearch = async () => { if (!sq.trim()) return; setSBusy(true); setSDone(true); try { const r: any = await Search(sq, 0); setSResults(r || []); } catch (e) { console.error(e); setSResults([]); } setSBusy(false); };
   const clearSearch = () => { setSq(""); setSResults([]); setSDone(false); setSearchFilter("all"); };
@@ -588,14 +789,17 @@ useEffect(()=>{
         onCtxMenu={(id, x, y) => { setCtxMenuChatId(id); setCtxMenuPos({ x, y }); }} />
 
       {tab === "chat" && <ChatPanel activeChat={activeChat} isArchived={isArchived} input={input} gen={gen} statusMsgs={statusMsgs} T={T} theme={theme} collSelector={collSelector}
-        onInputChange={setInput} onSend={send} onThemeToggle={() => setTheme(theme === "dark" ? "light" : "dark")} onOpenUploadModal={() => setShowUploadModal(true)}
+        evidenceEffort={evidenceEffort} onEvidenceEffortChange={setEvidenceEffort}
+        retrievalScope={retrievalScope} onRetrievalScopeChange={setRetrievalScope}
+        onInputChange={setInput} onSend={send} onThemeToggle={() => setTheme(theme === "dark" ? "light" : "dark")} onOpenUploadModal={() => setShowUploadModal(true)} onOpenBranches={openBranchModal} onOpenWorkspace={openWorkspaceModal} onOpenDiagnostics={openDiagnosticsModal}
         onStopGeneration={gen ? handleStopGeneration : undefined} onRerunFromMessage={handleBranchFromMessage} />}
 
       {tab === "search" && <SearchPanel sq={sq} sResults={sResults} sBusy={sBusy} sDone={sDone} searchFilter={searchFilter} filteredResults={filteredResults} T={T} displayScore={displayScore}
         onSearch={doSearch} onClear={clearSearch} onSqChange={setSq} onFilterChange={setSearchFilter} />}
 
-      {tab === "cols" && <CollectionsPanel cols={cols} activeColId={activeColId} idocs={idocs} selectedDocId={selectedDocId} selectedDocContent={selectedDocContent} T={T}
+      {tab === "cols" && <CollectionsPanel cols={cols} insights={collectionInsights} activeColId={activeColId} idocs={idocs} incompleteJobs={incompleteJobs} isIngesting={isIngesting} selectedDocId={selectedDocId} selectedDocContent={selectedDocContent} T={T} theme={theme}
         onSelectCol={setActiveColId} onDeleteCol={confirmDeleteCollection} onDeleteDoc={confirmDeleteDocument} onViewDoc={viewDocumentContent} onRefresh={() => loadDocs(activeColId)}
+        onResumeIncomplete={handleResumeJobs} onDiscardIncomplete={handleDiscardAllJobs} onDiscardIncompleteJob={handleDiscardJob} onRefreshIncomplete={loadIncompleteJobs}
         newColName={newColName} onNewColNameChange={setNewColName} onCreateCol={createCol} onOpenUploadModal={() => setShowUploadModal(true)} />}
 
       {/* Context Menu */}
@@ -606,6 +810,41 @@ useEffect(()=>{
           {a ? ctxMenuItem("Unarchive", <I.Unarchive />, () => handleUnarchiveChat(ctxMenuChatId!), T) : ctxMenuItem("Archive", <I.Archive />, () => handleArchiveChat(ctxMenuChatId!), T)}
           {!a && ctxMenuItem(chat.pinned ? "Unpin" : "Pin", <I.Pin />, () => handlePinChat(ctxMenuChatId!), T)}
         </div>); })()}
+
+      {/* Workspace Memory Modal */}
+      <WorkspaceModal
+        open={showWorkspaceModal}
+        theme={theme}
+        T={T}
+        loading={workspaceLoading}
+        data={workspaceSnapshot}
+        draftNotes={workspaceNotesDraft}
+        onDraftNotesChange={setWorkspaceNotesDraft}
+        onSaveNotes={saveWorkspaceNotes}
+        onRefresh={() => { void loadWorkspaceMemory(activeChatId); }}
+        onClose={() => setShowWorkspaceModal(false)}
+      />
+
+      {/* Conversation Branches Modal */}
+      <BranchModal
+        open={showBranchModal}
+        theme={theme}
+        messages={branchMessages as any}
+        currentLeafMessageId={activeChat?.currentLeafMessageId}
+        loading={branchLoading}
+        onClose={() => setShowBranchModal(false)}
+        onSelectBranch={handleSelectBranch}
+      />
+
+      {/* Diagnostics Modal */}
+      <DiagnosticsModal
+        open={showDiagnostics}
+        theme={theme}
+        loading={diagnosticsLoading}
+        data={diagnostics}
+        onClose={() => setShowDiagnostics(false)}
+        onRefresh={loadDiagnostics}
+      />
 
       {/* Upload Modal */}
       <FileUploadModal
