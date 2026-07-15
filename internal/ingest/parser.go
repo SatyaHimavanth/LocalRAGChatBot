@@ -3,11 +3,13 @@ package ingest
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
 	"encoding/xml"
 	"fmt"
 	"os"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 
 	"github.com/ledongthuc/pdf"
 )
@@ -26,7 +28,7 @@ func ParseFileBytes(data []byte, filename string) (string, error) {
 	ext := strings.ToLower(extOnly(filename))
 	switch ext {
 	case ".txt":
-		return normalizeExtractedText(string(data)), nil
+		return normalizeExtractedText(decodeTextBytes(data)), nil
 	case ".pdf":
 		return parsePDFBytes(data)
 	case ".docx":
@@ -199,8 +201,8 @@ func parseDOCXBytes(data []byte) (string, error) {
 }
 
 type docxDocument struct {
-	XMLName xml.Name   `xml:"document"`
-	Body    docxBody   `xml:"body"`
+	XMLName xml.Name `xml:"document"`
+	Body    docxBody `xml:"body"`
 }
 
 type docxBody struct {
@@ -208,8 +210,8 @@ type docxBody struct {
 }
 
 type docxPara struct {
-	PPr   *docxPPr   `xml:"pPr"`
-	Runs  []docxRun  `xml:"r"`
+	PPr  *docxPPr  `xml:"pPr"`
+	Runs []docxRun `xml:"r"`
 }
 
 type docxPPr struct {
@@ -304,6 +306,35 @@ func stripXMLTags(s string) string {
 	}
 	result := strings.Fields(buf.String())
 	return strings.Join(result, " ")
+}
+
+func decodeTextBytes(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	if bytes.Equal(data[:minInt(len(data), 3)], []byte{0xEF, 0xBB, 0xBF}) {
+		return string(data[3:])
+	}
+	if len(data) >= 2 {
+		switch {
+		case data[0] == 0xFF && data[1] == 0xFE:
+			u16 := make([]uint16, 0, (len(data)-2)/2)
+			for i := 2; i+1 < len(data); i += 2 {
+				u16 = append(u16, binary.LittleEndian.Uint16(data[i:]))
+			}
+			return string(utf16.Decode(u16))
+		case data[0] == 0xFE && data[1] == 0xFF:
+			u16 := make([]uint16, 0, (len(data)-2)/2)
+			for i := 2; i+1 < len(data); i += 2 {
+				u16 = append(u16, binary.BigEndian.Uint16(data[i:]))
+			}
+			return string(utf16.Decode(u16))
+		}
+	}
+	if bytes.ContainsRune(data, 0) {
+		return string(bytes.ToValidUTF8(data, nil))
+	}
+	return string(data)
 }
 
 func normalizeExtractedText(raw string) string {

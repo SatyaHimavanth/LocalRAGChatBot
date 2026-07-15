@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"time"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
@@ -37,7 +36,7 @@ func Open(dbFileName string) (*sql.DB, error) {
 	db.Exec("PRAGMA journal_mode=WAL")
 	db.Exec("PRAGMA busy_timeout=5000")
 
-	if err := runMigrations(db); err != nil {
+	if err := initializeSchema(db); err != nil {
 		return nil, err
 	}
 	return db, nil
@@ -75,28 +74,27 @@ func getDBPath(dbFileName string) (string, error) {
 	return filepath.Join(appDir, dbFileName), nil
 }
 
-func runMigrations(db *sql.DB) error {
-	// Use a tracking table so migrations only run once
-	db.Exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at INTEGER)`)
+func initializeSchema(db *sql.DB) error {
+    files := []string{
+        "0001_init.sql",
+        "0002_fts5.sql",
+        "0003_vec.sql",
+        "0004_ingestion_queue.sql",
+        "0005_workspace_memory.sql",
+        "0006_extension_hooks.sql",
+        "0007_event_log.sql",
+    }
 
-	files := []string{"0001_init.sql", "0002_fts5.sql", "0003_vec.sql", "0004_workspace.sql", "0005_chunks_meta.sql"}
-	for _, f := range files {
-		// Check if already applied
-		var count int
-		db.QueryRow("SELECT COUNT(*) FROM _migrations WHERE name = ?", f).Scan(&count)
-		if count > 0 {
-			continue
-		}
+    for _, f := range files {
+        sqlBytes, err := migrationsFS.ReadFile("migrations/" + f)
+        if err != nil {
+            return err
+        }
 
-		sqlBytes, err := migrationsFS.ReadFile("migrations/" + f)
-		if err != nil {
-			return err
-		}
-		if _, err := db.Exec(string(sqlBytes)); err != nil {
-			return err
-		}
-		// Mark as applied
-		db.Exec("INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)", f, time.Now().Unix())
-	}
-	return nil
+        if _, err := db.Exec(string(sqlBytes)); err != nil {
+            return err
+        }
+    }
+
+    return nil
 }

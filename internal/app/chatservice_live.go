@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -138,6 +139,9 @@ func (s *ChatService) ServiceStartup(ctx context.Context, options application.Se
 		agent.WithPlanner(agent.NewHeuristicPlanner()),
 	)
 	s.CleanupIncompleteOnStartup()
+	if s.DB != nil {
+		_ = store.EnsureDefaultExtensionHooks(s.DB)
+	}
 	return nil
 }
 
@@ -147,20 +151,23 @@ func (s *ChatService) CreateCollection(name string) (int64, error) {
 	if s.DB == nil {
 		return 0, fmt.Errorf("database not initialized")
 	}
-	if strings.TrimSpace(name) == "" {
+	name = strings.TrimSpace(name)
+	if name == "" {
 		return 0, fmt.Errorf("collection name cannot be empty")
 	}
 	// Check for duplicate collection names
 	cols, _ := store.GetCollections(s.DB)
 	for _, c := range cols {
-		if strings.EqualFold(c.Name, strings.TrimSpace(name)) {
-			return 0, fmt.Errorf("a collection named '%s' already exists", strings.TrimSpace(name))
+		if strings.EqualFold(c.Name, name) {
+			return 0, fmt.Errorf("a collection named '%s' already exists", name)
 		}
 	}
-	id, err := store.CreateCollection(s.DB, strings.TrimSpace(name))
+	embeddingModel, embeddingDims, vectorBackend := s.defaultCollectionProfile()
+	id, err := store.CreateCollectionWithProfile(s.DB, name, embeddingModel, embeddingDims, vectorBackend)
 	if err != nil {
 		return 0, fmt.Errorf("creating collection: %w", err)
 	}
+	s.recordEvent("collection:create", "Collection created", fmt.Sprintf("%s (id %d)", name, id), "info", "collections", id, 0, 0, "")
 	return id, nil
 }
 
@@ -168,7 +175,76 @@ func (s *ChatService) DeleteCollection(collectionID int64) error {
 	if s.DB == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	return store.DeleteCollection(s.DB, collectionID)
+	if err := store.DeleteCollection(s.DB, collectionID); err != nil {
+		return err
+	}
+	s.recordEvent("collection:delete", "Collection deleted", fmt.Sprintf("Collection %d removed", collectionID), "warn", "collections", collectionID, 0, 0, "")
+	return nil
+}
+
+// UpdateCollectionProfile stores the embedding/vector profile for a collection.
+func (s *ChatService) UpdateCollectionProfile(collectionID int64, embeddingModel string, embeddingDims int, vectorBackend string) error {
+	if s.DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if collectionID <= 0 {
+		return fmt.Errorf("invalid collection id")
+	}
+	if strings.TrimSpace(vectorBackend) == "" {
+		vectorBackend = s.defaultCollectionVectorBackend()
+	}
+	if err := store.UpdateCollectionProfile(s.DB, collectionID, strings.TrimSpace(embeddingModel), embeddingDims, vectorBackend); err != nil {
+		return err
+	}
+	s.recordEvent("collection:update_profile", "Collection profile updated", fmt.Sprintf("Collection %d · %s · %d dims · %s", collectionID, strings.TrimSpace(embeddingModel), embeddingDims, vectorBackend), "info", "collections", collectionID, 0, 0, "")
+	return nil
+}
+
+// GetExtensionHooks returns the future integration hook registry.
+func (s *ChatService) GetExtensionHooks() ([]store.ExtensionHook, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	return store.GetExtensionHooks(s.DB)
+}
+
+// UpdateExtensionHook persists hook enablement/configuration changes.
+func (s *ChatService) UpdateExtensionHook(hookKey string, enabled bool, configJSON string, state string) error {
+	if s.DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if err := store.UpdateExtensionHook(s.DB, hookKey, enabled, configJSON, state); err != nil {
+		return err
+	}
+	s.recordEvent("extension:update", "Extension hook updated", fmt.Sprintf("%s · enabled=%t · state=%s", hookKey, enabled, state), "info", "extensions", 0, 0, 0, "")
+	return nil
+}
+
+// ResetExtensionHooks restores the canonical phase-8 hook descriptors.
+func (s *ChatService) ResetExtensionHooks() error {
+	if s.DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if err := store.ResetExtensionHooks(s.DB); err != nil {
+		return err
+	}
+	s.recordEvent("extension:reset", "Extension hooks reset", "Default phase-8 hook descriptors restored", "info", "extensions", 0, 0, 0, "")
+	return nil
+}
+
+// GetEventLogs returns the recent workspace audit trail.
+func (s *ChatService) GetEventLogs(limit int) ([]store.EventLogEntry, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	return store.GetEventLogs(s.DB, limit)
+}
+
+func (s *ChatService) recordEvent(eventKey, title, detail, severity, scope string, collectionID, chatID, docID int64, batchID string) {
+	if s.DB == nil {
+		return
+	}
+	_ = store.AddEventLog(s.DB, eventKey, title, detail, severity, scope, collectionID, chatID, docID, batchID)
 }
 
 func (s *ChatService) DeleteDocument(docID int64) error {
@@ -194,7 +270,7 @@ func (s *ChatService) GetCollections() ([]store.Collection, error) {
 		return nil, fmt.Errorf("getting collections: %w", err)
 	}
 	if len(cols) == 0 {
-		_, err := store.CreateCollection(s.DB, "Knowledge Base")
+		_, err := store.CreateCollectionWithProfile(s.DB, "Knowledge Base", s.defaultCollectionEmbeddingModel(), s.defaultCollectionEmbeddingDims(), s.defaultCollectionVectorBackend())
 		if err != nil {
 			return nil, fmt.Errorf("creating default collection: %w", err)
 		}
@@ -213,7 +289,41 @@ func (s *ChatService) CreateChat(title string, collectionID int64) (int64, error
 	if err != nil {
 		return 0, fmt.Errorf("creating chat: %w", err)
 	}
+	s.recordEvent("chat:create", "Chat created", fmt.Sprintf("%s (collection %d)", title, collectionID), "info", "chat", collectionID, id, 0, "")
 	return id, nil
+}
+
+func (s *ChatService) defaultCollectionEmbeddingModel() string {
+	if s.Engine != nil {
+		if model := strings.TrimSpace(s.Engine.EmbeddingModelName()); model != "" {
+			return model
+		}
+	}
+	if env := strings.TrimSpace(os.Getenv("EMBED_MODEL_PATH")); env != "" {
+		return filepath.Base(env)
+	}
+	return "local-embedding"
+}
+
+func (s *ChatService) defaultCollectionEmbeddingDims() int {
+	if s.Engine != nil {
+		if dims := s.Engine.EmbeddingDimensions(); dims > 0 {
+			return dims
+		}
+	}
+	return 0
+}
+
+func (s *ChatService) defaultCollectionVectorBackend() string {
+	if s.Engine != nil {
+		if backend := strings.TrimSpace(s.Engine.EmbeddingBackend()); backend != "" {
+			return backend
+		}
+	}
+	return "sqlite-vec"
+}
+func (s *ChatService) defaultCollectionProfile() (string, int, string) {
+	return s.defaultCollectionEmbeddingModel(), s.defaultCollectionEmbeddingDims(), s.defaultCollectionVectorBackend()
 }
 
 func (s *ChatService) GetChats() ([]store.ChatSession, error) {
@@ -230,72 +340,70 @@ func (s *ChatService) GetChatMessages(sessionID int64) ([]store.ChatMessage, err
 	return store.GetChatMessages(s.DB, sessionID)
 }
 
-func (s *ChatService) GetChatMessagesFlat(sessionID int64) ([]store.ChatMessage, error) {
-	if s.DB == nil {
-		return nil, fmt.Errorf("database not initialized")
-	}
-	return store.GetChatMessagesFlat(s.DB, sessionID)
-}
-
-func (s *ChatService) SetChatCurrentLeafMessage(sessionID, leafMessageID int64) error {
-	if s.DB == nil {
-		return fmt.Errorf("database not initialized")
-	}
-	if leafMessageID < 0 {
-		return fmt.Errorf("invalid leaf message id")
-	}
-	if leafMessageID > 0 {
-		msg, err := store.GetChatMessageByID(s.DB, sessionID, leafMessageID)
-		if err != nil {
-			return fmt.Errorf("validating branch leaf: %w", err)
-		}
-		if msg == nil {
-			return fmt.Errorf("message %d not found in session", leafMessageID)
-		}
-	}
-	return store.SetSessionLeafMessageID(s.DB, sessionID, leafMessageID)
-}
-
 func (s *ChatService) DeleteChat(sessionID int64) error {
 	if s.DB == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	return store.DeleteChatSession(s.DB, sessionID)
+	if err := store.DeleteChatSession(s.DB, sessionID); err != nil {
+		return err
+	}
+	s.recordEvent("chat:delete", "Chat deleted", fmt.Sprintf("Chat %d removed", sessionID), "warn", "chat", 0, sessionID, 0, "")
+	return nil
 }
 
 func (s *ChatService) UpdateChatTitle(sessionID int64, title string) error {
 	if s.DB == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	return store.UpdateChatSessionTitle(s.DB, sessionID, title)
+	if err := store.UpdateChatSessionTitle(s.DB, sessionID, title); err != nil {
+		return err
+	}
+	s.recordEvent("chat:rename", "Chat renamed", fmt.Sprintf("Chat %d → %s", sessionID, title), "info", "chat", 0, sessionID, 0, "")
+	return nil
 }
 
 func (s *ChatService) ArchiveChat(sessionID int64) error {
 	if s.DB == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	return store.ArchiveChatSession(s.DB, sessionID)
+	if err := store.ArchiveChatSession(s.DB, sessionID); err != nil {
+		return err
+	}
+	s.recordEvent("chat:archive", "Chat archived", fmt.Sprintf("Chat %d archived", sessionID), "info", "chat", 0, sessionID, 0, "")
+	return nil
 }
 
 func (s *ChatService) UnarchiveChat(sessionID int64) error {
 	if s.DB == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	return store.UnarchiveChatSession(s.DB, sessionID)
+	if err := store.UnarchiveChatSession(s.DB, sessionID); err != nil {
+		return err
+	}
+	s.recordEvent("chat:unarchive", "Chat restored", fmt.Sprintf("Chat %d restored", sessionID), "info", "chat", 0, sessionID, 0, "")
+	return nil
 }
 
 func (s *ChatService) PinChat(sessionID int64) error {
 	if s.DB == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	return store.PinChatSession(s.DB, sessionID)
+	if err := store.PinChatSession(s.DB, sessionID); err != nil {
+		return err
+	}
+	s.recordEvent("chat:pin", "Chat pinned", fmt.Sprintf("Chat %d pinned", sessionID), "info", "chat", 0, sessionID, 0, "")
+	return nil
 }
 
 func (s *ChatService) UnpinChat(sessionID int64) error {
 	if s.DB == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	return store.UnpinChatSession(s.DB, sessionID)
+	if err := store.UnpinChatSession(s.DB, sessionID); err != nil {
+		return err
+	}
+	s.recordEvent("chat:unpin", "Chat unpinned", fmt.Sprintf("Chat %d unpinned", sessionID), "info", "chat", 0, sessionID, 0, "")
+	return nil
 }
 
 // CancelGeneration cancels an in-progress streaming generation for a session.
@@ -313,60 +421,60 @@ func (s *ChatService) CancelGeneration(sessionID int64) error {
 //  Messaging
 
 type AgentResponseMeta struct {
-	Cancelled            bool     `json:"cancelled"`
-	UsedRetrieval        bool     `json:"usedRetrieval"`
-	UsedMemory           bool     `json:"usedMemory"`
-	UsedWorkspaceMemory  bool     `json:"usedWorkspaceMemory"`
-	UsedDirect           bool     `json:"usedDirect"`
-	SourceCount          int      `json:"sourceCount"`
-	EvidenceEffort       string   `json:"evidenceEffort,omitempty"`
-	EvidenceCoverage     float64  `json:"evidenceCoverage,omitempty"`
-	EvidencePasses       int      `json:"evidencePasses,omitempty"`
-	EvidenceCandidates   int      `json:"evidenceCandidates,omitempty"`
-	EvidenceExpanded     int      `json:"evidenceExpanded,omitempty"`
-	EvidenceCompressed   int      `json:"evidenceCompressed,omitempty"`
-	EvidenceTokens       int      `json:"evidenceTokens,omitempty"`
-	EvidenceBudgetTokens int      `json:"evidenceBudgetTokens,omitempty"`
-	EvidenceTimeBudgetMS int64    `json:"evidenceTimeBudgetMs,omitempty"`
-	EvidenceSummary      string   `json:"evidenceSummary,omitempty"`
-	VerificationScore    float64  `json:"verificationScore,omitempty"`
-	VerificationVerdict  string   `json:"verificationVerdict,omitempty"`
-	VerificationSummary  string   `json:"verificationSummary,omitempty"`
-	VerificationIssues   []string `json:"verificationIssues,omitempty"`
-	Reason               string   `json:"reason,omitempty"`
-	RetrievalQuery       string   `json:"retrievalQuery,omitempty"`
-	RetrievalScope       string   `json:"retrievalScope,omitempty"`
-	TopK                 int      `json:"topK,omitempty"`
+	Cancelled      bool     `json:"cancelled"`
+	UsedRetrieval  bool     `json:"usedRetrieval"`
+	UsedMemory     bool     `json:"usedMemory"`
+	UsedDirect     bool     `json:"usedDirect"`
+	SourceCount    int      `json:"sourceCount"`
+	EvidenceCount  int      `json:"evidenceCount,omitempty"`
+	Confidence     float64  `json:"confidence,omitempty"`
+	Verified       bool     `json:"verified,omitempty"`
+	Verification   string   `json:"verification,omitempty"`
+	EvidenceGaps   []string `json:"evidenceGaps,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
+	RetrievalQuery string   `json:"retrievalQuery,omitempty"`
+	TopK           int      `json:"topK,omitempty"`
 }
 
+const branchPromptPrefix = "[[branch-parent:"
+
+func encodeBranchPrompt(parentMessageID int64, prompt string) string {
+	return fmt.Sprintf("[[branch-parent:%d]]\n%s", parentMessageID, prompt)
+}
+
+func extractBranchPrompt(prompt string) (string, int64) {
+	trimmed := strings.TrimSpace(prompt)
+	if !strings.HasPrefix(trimmed, branchPromptPrefix) {
+		return prompt, 0
+	}
+	end := strings.Index(trimmed, "]]\n")
+	if end == -1 {
+		return prompt, 0
+	}
+	idStr := strings.TrimPrefix(trimmed[:end], branchPromptPrefix)
+	parentID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return prompt, 0
+	}
+	return strings.TrimSpace(trimmed[end+3:]), parentID
+}
 func (m AgentResponseMeta) asMap(sessionID, msgID int64) map[string]any {
 	return map[string]any{
-		"sessionId":            sessionID,
-		"msgId":                msgID,
-		"cancelled":            m.Cancelled,
-		"usedRetrieval":        m.UsedRetrieval,
-		"usedMemory":           m.UsedMemory,
-		"usedWorkspaceMemory":  m.UsedWorkspaceMemory,
-		"usedDirect":           m.UsedDirect,
-		"sourceCount":          m.SourceCount,
-		"evidenceEffort":       m.EvidenceEffort,
-		"evidenceCoverage":     m.EvidenceCoverage,
-		"evidencePasses":       m.EvidencePasses,
-		"evidenceCandidates":   m.EvidenceCandidates,
-		"evidenceExpanded":     m.EvidenceExpanded,
-		"evidenceCompressed":   m.EvidenceCompressed,
-		"evidenceTokens":       m.EvidenceTokens,
-		"evidenceBudgetTokens": m.EvidenceBudgetTokens,
-		"evidenceTimeBudgetMs": m.EvidenceTimeBudgetMS,
-		"evidenceSummary":      m.EvidenceSummary,
-		"verificationScore":    m.VerificationScore,
-		"verificationVerdict":  m.VerificationVerdict,
-		"verificationSummary":  m.VerificationSummary,
-		"verificationIssues":   m.VerificationIssues,
-		"reason":               m.Reason,
-		"retrievalQuery":       m.RetrievalQuery,
-		"retrievalScope":       m.RetrievalScope,
-		"topK":                 m.TopK,
+		"sessionId":      sessionID,
+		"msgId":          msgID,
+		"cancelled":      m.Cancelled,
+		"usedRetrieval":  m.UsedRetrieval,
+		"usedMemory":     m.UsedMemory,
+		"usedDirect":     m.UsedDirect,
+		"sourceCount":    m.SourceCount,
+		"evidenceCount":  m.EvidenceCount,
+		"confidence":     m.Confidence,
+		"verified":       m.Verified,
+		"verification":   m.Verification,
+		"evidenceGaps":   m.EvidenceGaps,
+		"reason":         m.Reason,
+		"retrievalQuery": m.RetrievalQuery,
+		"topK":           m.TopK,
 	}
 }
 
@@ -378,7 +486,7 @@ func (m AgentResponseMeta) json() string {
 	return string(b)
 }
 
-func (s *ChatService) startConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64, effort agent.EvidenceEffort) (int64, error) {
+func (s *ChatService) startConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64) (int64, error) {
 	if s.app == nil {
 		s.app = application.Get()
 	}
@@ -411,17 +519,13 @@ func (s *ChatService) startConversationTurn(sessionID int64, collectionID int64,
 		return userMsgID, nil
 	}
 
-	go s.runConversationTurn(sessionID, collectionID, prompt, parentMessageID, userMsgID, effort)
+	go s.runConversationTurn(sessionID, collectionID, prompt, parentMessageID, userMsgID)
 	return userMsgID, nil
 }
 
 func (s *ChatService) SendMessage(sessionID int64, collectionID int64, prompt string) error {
-	cleanPrompt, parentMessageID, effort, scope := extractTurnControls(prompt)
-	effectiveCollectionID := collectionID
-	if scope == agent.RetrievalScopeAll.String() {
-		effectiveCollectionID = 0
-	}
-	_, err := s.startConversationTurn(sessionID, effectiveCollectionID, cleanPrompt, parentMessageID, effort)
+	cleanPrompt, parentMessageID := extractBranchPrompt(prompt)
+	_, err := s.startConversationTurn(sessionID, collectionID, cleanPrompt, parentMessageID)
 	return err
 }
 
@@ -436,21 +540,14 @@ func (s *ChatService) emitAgentPlan(sessionID int64, plan agent.Plan) {
 		intent = "conversation"
 	}
 	s.emit("chat:plan", map[string]any{
-		"sessionId":              sessionID,
-		"intent":                 intent,
-		"useRetrieval":           plan.UseRetrieval,
-		"useMemory":              plan.UseMemory,
-		"useWorkspaceMemory":     plan.UseWorkspaceMemory,
-		"useDirect":              plan.UseDirect,
-		"topK":                   plan.TopK,
-		"evidenceEffort":         plan.EvidenceEffort.String(),
-		"evidenceCandidateLimit": plan.EvidenceCandidateLimit,
-		"evidencePasses":         plan.EvidencePasses,
-		"evidenceTokenBudget":    plan.EvidenceTokenBudget,
-		"evidenceCoverageTarget": plan.EvidenceCoverageTarget,
-		"evidenceTimeBudgetMs":   plan.EvidenceTimeBudgetMS,
-		"retrievalQuery":         plan.RetrievalQuery,
-		"reason":                 plan.Reason,
+		"sessionId":      sessionID,
+		"intent":         intent,
+		"useRetrieval":   plan.UseRetrieval,
+		"useMemory":      plan.UseMemory,
+		"useDirect":      plan.UseDirect,
+		"topK":           plan.TopK,
+		"retrievalQuery": plan.RetrievalQuery,
+		"reason":         plan.Reason,
 	})
 }
 
@@ -475,7 +572,7 @@ func (s *ChatService) persistCancelledMessage(sessionID int64, parentMessageID i
 	s.emit("chat:done", meta.asMap(sessionID, cancelledMsgID))
 }
 
-func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64, userMessageID int64, effort agent.EvidenceEffort) {
+func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64, userMessageID int64) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancelMu.Lock()
 	s.cancelFuncs[sessionID] = cancel
@@ -483,7 +580,7 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 
 	var msgID int64
 	var doneEmitted bool
-	meta := AgentResponseMeta{UsedDirect: true, EvidenceEffort: effort.String()}
+	meta := AgentResponseMeta{UsedDirect: true}
 	defer func() {
 		cancel()
 		if doneEmitted {
@@ -523,19 +620,19 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 	}
 
 	ag := s.ensureAgent()
+	memoryContext := s.loadConversationMemory(sessionID)
 	plan := ag.Decide(agent.Request{
-		Prompt:         prompt,
-		History:        history,
-		CollectionID:   collectionID,
-		CollectionName: s.getCollectionName(collectionID),
-		HasDocuments:   s.DB != nil,
-		Effort:         effort,
+		Prompt:          prompt,
+		History:         history,
+		CollectionID:    collectionID,
+		CollectionName:  s.getCollectionName(collectionID),
+		HasDocuments:    s.DB != nil,
+		WorkspaceMemory: memoryContext,
 	})
 
 	meta.UsedRetrieval = plan.UseRetrieval
 	meta.UsedMemory = plan.UseMemory
-	meta.UsedWorkspaceMemory = plan.UseWorkspaceMemory
-	meta.UsedDirect = !plan.UseRetrieval && !plan.UseMemory && !plan.UseWorkspaceMemory
+	meta.UsedDirect = !plan.UseRetrieval && !plan.UseMemory
 	meta.RetrievalQuery = plan.RetrievalQuery
 	meta.TopK = plan.TopK
 	meta.Reason = plan.Reason
@@ -550,49 +647,39 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 	}
 
 	var chunks []store.ScoredChunk
-	evidenceSummary := ""
+	var evidence EvidenceBundle
 	if plan.UseRetrieval && s.DB != nil {
 		query := strings.TrimSpace(plan.RetrievalQuery)
 		if query == "" {
 			query = prompt
 		}
 		meta.RetrievalQuery = query
-		report := s.buildEvidenceBundle(ctx, sessionID, collectionID, query, history, effort, plan)
-		chunks = report.Chunks
-		meta.RetrievalQuery = report.Query
-		meta.EvidenceCoverage = report.Stats.Coverage
-		meta.EvidencePasses = report.Stats.Passes
-		meta.EvidenceCandidates = report.Stats.CandidateCount
-		meta.EvidenceExpanded = report.Stats.ExpandedCount
-		meta.EvidenceCompressed = report.Stats.CompressedCount
-		meta.EvidenceTokens = report.Stats.EstimatedTokens
-		meta.EvidenceBudgetTokens = report.Stats.TokenBudget
-		meta.EvidenceTimeBudgetMS = report.Stats.TimeBudgetMS
-		evidenceSummary = report.Summary
-		s.emit("chat:evidence", map[string]any{
-			"sessionId":       sessionID,
-			"query":           report.Query,
-			"summary":         report.Summary,
-			"coverage":        report.Stats.Coverage,
-			"passes":          report.Stats.Passes,
-			"candidateCount":  report.Stats.CandidateCount,
-			"expandedCount":   report.Stats.ExpandedCount,
-			"compressedCount": report.Stats.CompressedCount,
-			"finalCount":      report.Stats.FinalCount,
-			"tokenBudget":     report.Stats.TokenBudget,
-			"estimatedTokens": report.Stats.EstimatedTokens,
-			"timeBudgetMs":    report.Stats.TimeBudgetMS,
-			"preview":         s.evidencePreview(report.Chunks, collectionID),
-		})
-	}
-	workspaceMemory := ""
-	if plan.UseWorkspaceMemory || plan.UseMemory {
-		workspaceMemory = s.buildWorkspaceMemory(sessionID, collectionID)
-		if workspaceMemory != "" {
-			meta.UsedWorkspaceMemory = true
+		s.emit("chat:status", map[string]any{"sessionId": sessionID, "status": "searching", "label": "Searching documents..."})
+		queryEmb, err := s.Engine.Embed(query)
+		if err == nil {
+			chunks, err = store.HybridSearch(s.DB, collectionID, query, queryEmb, plan.TopK)
+			if err != nil {
+				chunks = nil
+			}
 		}
+		evidence = buildEvidenceBundle(s.DB, collectionID, s.getCollectionName(collectionID), query, prompt, chunks, history)
 	}
-	meta.SourceCount = len(chunks)
+	meta.SourceCount = evidence.SourceCount
+	meta.EvidenceCount = evidence.SourceCount
+	meta.Confidence = evidence.Confidence
+	meta.Verified = evidence.Verified
+	meta.Verification = evidence.Verification
+	meta.EvidenceGaps = append([]string(nil), evidence.Gaps...)
+	s.emit("chat:evidence", map[string]any{
+		"sessionId":     sessionID,
+		"query":         meta.RetrievalQuery,
+		"sourceCount":   meta.SourceCount,
+		"evidenceCount": meta.EvidenceCount,
+		"confidence":    meta.Confidence,
+		"verified":      meta.Verified,
+		"verification":  meta.Verification,
+		"evidenceGaps":  meta.EvidenceGaps,
+	})
 	if ctx.Err() != nil {
 		meta.Cancelled = true
 		s.persistCancelledMessage(sessionID, userMessageID, meta)
@@ -621,7 +708,7 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 	s.emit("chat:thinking:done", map[string]any{"sessionId": sessionID})
 
 	ctxSize := getOptimalContextSize()
-	messages, sourceRefs := buildMessagesWithBudget(ag, plan, effort, chunks, prompt, history, ctxSize, s.getCollectionName(collectionID), workspaceMemory, evidenceSummary)
+	messages, sourceRefs := buildMessagesWithBudget(ag, plan, evidence, prompt, history, memoryContext, ctxSize, s.getCollectionName(collectionID))
 
 	chatCtx, err := s.Engine.ChatModel.NewContext(llama.WithContext(ctxSize))
 	if err != nil {
@@ -641,39 +728,33 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 		case delta, ok := <-deltas:
 			if !ok {
 				if s.DB != nil && fullResponse.Len() > 0 {
-					responseText := fullResponse.String()
-					report := s.verifyAnswer(prompt, responseText, chunks, meta, plan)
-					meta.VerificationScore = report.Confidence
-					meta.VerificationVerdict = report.Verdict
-					meta.VerificationSummary = report.Summary
-					meta.VerificationIssues = report.Issues
 					assistantMetaJSON := meta.json()
-					msgID, err = store.AddChatMessage(s.DB, sessionID, "assistant", responseText, userMessageID, assistantMetaJSON)
+					msgID, err = store.AddChatMessage(s.DB, sessionID, "assistant", fullResponse.String(), userMessageID, assistantMetaJSON)
 					if err == nil {
-						s.refreshWorkspaceMemoryForTurn(sessionID)
-					}
-					if err == nil && len(sourceRefs) > 0 {
-						colName := s.getCollectionName(collectionID)
-						for _, sr := range sourceRefs {
-							filename := s.getChunkFilename(sr.chunk.ChunkID)
-							score := normalizeMatchScore(sr.chunk.Score)
-							store.AddMessageSource(s.DB, msgID, sessionID, sr.chunk.ChunkID, filename, collectionID, colName, score, sr.chunk.Content, sr.refNum)
+						if len(sourceRefs) > 0 {
+							colName := s.getCollectionName(collectionID)
+							for _, sr := range sourceRefs {
+								filename := s.getChunkFilename(sr.chunk.ChunkID)
+								score := normalizeMatchScore(sr.chunk.Score)
+								store.AddMessageSource(s.DB, msgID, sessionID, sr.chunk.ChunkID, filename, collectionID, colName, score, sr.chunk.Content, sr.refNum)
+							}
+							sourceMap := make([]map[string]any, 0, len(sourceRefs))
+							for _, sr := range sourceRefs {
+								fn := s.getChunkFilename(sr.chunk.ChunkID)
+								score := normalizeMatchScore(sr.chunk.Score)
+								sourceMap = append(sourceMap, map[string]any{
+									"refNumber":      sr.refNum,
+									"chunkId":        sr.chunk.ChunkID,
+									"content":        sr.chunk.Content,
+									"filename":       fn,
+									"collectionId":   collectionID,
+									"collectionName": colName,
+									"similarity":     score,
+								})
+							}
+							s.emit("chat:sources", map[string]any{"sessionId": sessionID, "msgId": msgID, "sources": sourceMap})
 						}
-						sourceMap := make([]map[string]any, 0, len(sourceRefs))
-						for _, sr := range sourceRefs {
-							fn := s.getChunkFilename(sr.chunk.ChunkID)
-							score := normalizeMatchScore(sr.chunk.Score)
-							sourceMap = append(sourceMap, map[string]any{
-								"refNumber":      sr.refNum,
-								"chunkId":        sr.chunk.ChunkID,
-								"content":        sr.chunk.Content,
-								"filename":       fn,
-								"collectionId":   collectionID,
-								"collectionName": colName,
-								"similarity":     score,
-							})
-						}
-						s.emit("chat:sources", map[string]any{"sessionId": sessionID, "msgId": msgID, "sources": sourceMap})
+						s.persistConversationMemory(sessionID, collectionID, userMessageID, msgID, prompt, fullResponse.String(), evidence, plan, history)
 					}
 				}
 				meta.Cancelled = false
@@ -789,6 +870,21 @@ func (s *ChatService) GetDocumentContent(docID int64) (string, error) {
 	return doc.Content, nil
 }
 
+// GetDocumentChunks returns all stored chunks for a document ordered by ord.
+func (s *ChatService) GetDocumentChunks(docID int64) ([]store.ChunkRecord, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	doc, err := store.GetDocumentByID(s.DB, docID)
+	if err != nil {
+		return nil, fmt.Errorf("getting document: %w", err)
+	}
+	if doc == nil {
+		return nil, fmt.Errorf("document not found")
+	}
+	return store.GetChunksByDocument(s.DB, docID)
+}
+
 // CheckFileHash checks if a file hash already exists in a collection.
 func (s *ChatService) CheckFileHash(hash string, collectionID int64) (*FileUploadResult, error) {
 	if s.DB == nil {
@@ -863,13 +959,84 @@ type SearchResult struct {
 	CollectionID   int64   `json:"collectionId"`
 	CollectionName string  `json:"collectionName"`
 	Filename       string  `json:"filename"`
-	Title          string  `json:"title,omitempty"`
-	SectionPath    string  `json:"sectionPath,omitempty"`
-	ChunkSummary   string  `json:"chunkSummary,omitempty"`
 	ChunkID        int64   `json:"chunkId"`
 }
 
-func (s *ChatService) Search(query string, collectionID int64) ([]SearchResult, error) {
+// GetChunkContext returns the target chunk plus its parent and neighbor context.
+func (s *ChatService) GetChunkContext(chunkID int64, radius int) ([]store.ChunkRecord, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	if radius < 0 {
+		radius = 0
+	}
+	return store.GetChunkNeighborhood(s.DB, chunkID, radius)
+}
+
+// SearchMetadata performs a document-level search over filenames, titles,
+// summaries and collection names.
+func (s *ChatService) SearchMetadata(query string, collectionID int64, topK int) ([]SearchResult, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
+	hits, err := store.MetadataSearch(s.DB, collectionID, query, clampSearchLimit(topK))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SearchResult, 0, len(hits))
+	for _, hit := range hits {
+		content := hit.Snippet
+		if content == "" {
+			content = strings.TrimSpace(hit.Title)
+		}
+		if content == "" {
+			content = hit.Filename
+		}
+		out = append(out, SearchResult{
+			Content:        content,
+			Score:          hit.Score,
+			SearchType:     "metadata",
+			CollectionID:   hit.CollectionID,
+			CollectionName: hit.CollectionName,
+			Filename:       hit.Filename,
+			ChunkID:        hit.ChunkID,
+		})
+	}
+	return out, nil
+}
+
+// SearchWorkspace expands retrieval to include the current session's cited source
+// chunks so the UI can search a working context, not just documents.
+func (s *ChatService) SearchWorkspace(query string, collectionID, sessionID int64, topK int) ([]SearchResult, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
+	base, err := s.Search(query, collectionID, topK)
+	if err != nil {
+		return nil, err
+	}
+	workspace := append([]SearchResult(nil), base...)
+	if sessionID > 0 {
+		more, err := s.searchSessionSources(query, collectionID, sessionID, topK)
+		if err != nil {
+			return nil, err
+		}
+		workspace = mergeSearchResultsByRRF(workspace, more)
+	}
+	limit := clampSearchLimit(topK)
+	if len(workspace) > limit {
+		workspace = workspace[:limit]
+	}
+	return workspace, nil
+}
+
+func (s *ChatService) Search(query string, collectionID int64, topK int) ([]SearchResult, error) {
 	if s.DB == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -888,8 +1055,9 @@ func (s *ChatService) Search(query string, collectionID int64) ([]SearchResult, 
 
 	var results []SearchResult
 
+	limit := clampSearchLimit(topK)
 	if collectionID > 0 {
-		colResults, err := s.searchCollection(query, queryEmb, collectionID)
+		colResults, err := s.searchCollection(query, queryEmb, collectionID, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -902,7 +1070,7 @@ func (s *ChatService) Search(query string, collectionID int64) ([]SearchResult, 
 	}
 
 	for _, col := range cols {
-		colResults, err := s.searchCollection(query, queryEmb, col.ID)
+		colResults, err := s.searchCollection(query, queryEmb, col.ID, limit)
 		if err != nil {
 			continue
 		}
@@ -918,16 +1086,16 @@ func (s *ChatService) Search(query string, collectionID int64) ([]SearchResult, 
 		}
 	}
 
-	if len(results) > 20 {
-		results = results[:20]
+	if len(results) > limit {
+		results = results[:limit]
 	}
 	return results, nil
 }
 
-func (s *ChatService) searchCollection(query string, queryEmb []float32, collectionID int64) ([]SearchResult, error) {
-	kwResults, err := store.KeywordSearch(s.DB, collectionID, query, 20)
+func (s *ChatService) searchCollection(query string, queryEmb []float32, collectionID int64, topK int) ([]SearchResult, error) {
+	kwResults, err := store.KeywordSearch(s.DB, collectionID, query, topK)
 	if err != nil {
-		kwResults, err = store.FallbackSearch(s.DB, collectionID, query, 20)
+		kwResults, err = store.FallbackSearch(s.DB, collectionID, query, topK)
 		if err != nil {
 			return nil, err
 		}
@@ -936,7 +1104,7 @@ func (s *ChatService) searchCollection(query string, queryEmb []float32, collect
 	// Also try vector search if we have an embedding
 	var vecResults []store.ScoredChunk
 	if queryEmb != nil {
-		vecResults, err = store.VectorSearch(s.DB, collectionID, queryEmb, 20)
+		vecResults, err = store.VectorSearch(s.DB, collectionID, queryEmb, topK)
 		if err != nil {
 			vecResults = nil
 		}
@@ -953,21 +1121,18 @@ func (s *ChatService) searchCollection(query string, queryEmb []float32, collect
 
 	for rank, r := range kwResults {
 		fn := s.getChunkFilename(r.ChunkID)
-		title, section, summary := s.getChunkPreviewMeta(r.ChunkID)
 		ns := normalizeBM25Score(r.Score)
 		merged[r.ChunkID] = &scored{
 			sr: SearchResult{
 				Content: r.Content, Score: ns, SearchType: "keyword",
 				CollectionID:   collectionID,
-				CollectionName: colName, Filename: fn, Title: title, SectionPath: section, ChunkSummary: summary,
-				ChunkID: r.ChunkID,
+				CollectionName: colName, Filename: fn, ChunkID: r.ChunkID,
 			},
 			rrf: 1.0 / float64(k+rank+1),
 		}
 	}
 	for rank, r := range vecResults {
 		fn := s.getChunkFilename(r.ChunkID)
-		title, section, summary := s.getChunkPreviewMeta(r.ChunkID)
 		vecNorm := normalizeDistanceScore(r.Score)
 		if existing, ok := merged[r.ChunkID]; ok {
 			existing.rrf += 1.0 / float64(k+rank+1)
@@ -975,22 +1140,12 @@ func (s *ChatService) searchCollection(query string, queryEmb []float32, collect
 			if vecNorm > existing.sr.Score {
 				existing.sr.Score = vecNorm
 			}
-			if existing.sr.Title == "" {
-				existing.sr.Title = title
-			}
-			if existing.sr.SectionPath == "" {
-				existing.sr.SectionPath = section
-			}
-			if existing.sr.ChunkSummary == "" {
-				existing.sr.ChunkSummary = summary
-			}
 		} else {
 			merged[r.ChunkID] = &scored{
 				sr: SearchResult{
 					Content: r.Content, Score: vecNorm, SearchType: "vector",
 					CollectionID:   collectionID,
-					CollectionName: colName, Filename: fn, Title: title, SectionPath: section, ChunkSummary: summary,
-					ChunkID: r.ChunkID,
+					CollectionName: colName, Filename: fn, ChunkID: r.ChunkID,
 				},
 				rrf: 1.0 / float64(k+rank+1),
 			}
@@ -1002,10 +1157,198 @@ func (s *ChatService) searchCollection(query string, queryEmb []float32, collect
 		out = append(out, sc.sr)
 	}
 	sort.Slice(out, func(i, j int) bool { return merged[out[i].ChunkID].rrf > merged[out[j].ChunkID].rrf })
-	if len(out) > 20 {
-		out = out[:20]
+	if len(out) > topK {
+		out = out[:topK]
 	}
 	return out, nil
+}
+
+func (s *ChatService) searchSessionSources(query string, collectionID, sessionID int64, topK int) ([]SearchResult, error) {
+	if s.DB == nil || sessionID <= 0 {
+		return nil, nil
+	}
+	terms := searchTerms(query)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	all, err := store.GetSessionSources(s.DB, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	type scoredSource struct {
+		result SearchResult
+		score  float64
+	}
+	var scored []scoredSource
+	for _, refs := range all {
+		for _, ref := range refs {
+			if collectionID > 0 && ref.CollectionID != collectionID {
+				continue
+			}
+			score := workspaceSourceScore(query, terms, ref.Filename, ref.CollectionName, ref.Content, ref.Similarity)
+			if score <= 0 {
+				continue
+			}
+			scored = append(scored, scoredSource{result: SearchResult{
+				Content:        ref.Content,
+				Score:          score,
+				SearchType:     "workspace",
+				CollectionID:   ref.CollectionID,
+				CollectionName: ref.CollectionName,
+				Filename:       ref.Filename,
+				ChunkID:        ref.ChunkID,
+			}, score: score})
+		}
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score == scored[j].score {
+			return scored[i].result.ChunkID < scored[j].result.ChunkID
+		}
+		return scored[i].score > scored[j].score
+	})
+	limit := clampSearchLimit(topK)
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+	out := make([]SearchResult, 0, len(scored))
+	for _, item := range scored {
+		out = append(out, item.result)
+	}
+	return out, nil
+}
+
+func clampSearchLimit(topK int) int {
+	if topK <= 0 {
+		return 20
+	}
+	if topK > 50 {
+		return 50
+	}
+	return topK
+}
+
+func mergeSearchResultsByRRF(base, extra []SearchResult) []SearchResult {
+	if len(extra) == 0 {
+		return base
+	}
+	const k = 60
+	type scored struct {
+		result SearchResult
+		rrf    float64
+	}
+	merged := make(map[string]*scored)
+	key := func(r SearchResult) string {
+		return fmt.Sprintf("%d:%d", r.CollectionID, r.ChunkID)
+	}
+	for rank, r := range base {
+		merged[key(r)] = &scored{result: r, rrf: 1.0 / float64(k+rank+1)}
+	}
+	for rank, r := range extra {
+		k2 := key(r)
+		if existing, ok := merged[k2]; ok {
+			existing.rrf += 1.0 / float64(k+rank+1)
+			if r.Score > existing.result.Score {
+				existing.result.Score = r.Score
+			}
+			if existing.result.SearchType == "" || existing.result.SearchType == r.SearchType {
+				existing.result.SearchType = r.SearchType
+			} else if r.SearchType == "workspace" || existing.result.SearchType == "workspace" {
+				existing.result.SearchType = "workspace"
+			} else if r.SearchType == "metadata" || existing.result.SearchType == "metadata" {
+				existing.result.SearchType = "metadata"
+			} else {
+				existing.result.SearchType = "hybrid"
+			}
+			existing.result.Content = mergeSearchContent(existing.result.Content, r.Content)
+		} else {
+			merged[k2] = &scored{result: r, rrf: 1.0 / float64(k+rank+1)}
+		}
+	}
+	out := make([]SearchResult, 0, len(merged))
+	for _, item := range merged {
+		out = append(out, item.result)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if merged[key(out[i])].rrf == merged[key(out[j])].rrf {
+			return out[i].ChunkID < out[j].ChunkID
+		}
+		return merged[key(out[i])].rrf > merged[key(out[j])].rrf
+	})
+	return out
+}
+
+func mergeSearchContent(a, b string) string {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" {
+		return b
+	}
+	if b == "" || strings.Contains(a, b) {
+		return a
+	}
+	if strings.Contains(b, a) {
+		return b
+	}
+	return a + "\n" + b
+}
+
+func searchTerms(query string) []string {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil
+	}
+	terms := strings.FieldsFunc(query, func(r rune) bool {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return false
+		case r >= '0' && r <= '9':
+			return false
+		default:
+			return true
+		}
+	})
+	if len(terms) == 0 {
+		return nil
+	}
+	uniq := make([]string, 0, len(terms))
+	seen := map[string]struct{}{}
+	for _, t := range terms {
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		uniq = append(uniq, t)
+	}
+	return uniq
+}
+
+func workspaceSourceScore(query string, terms []string, filename, collectionName, content string, similarity float64) float64 {
+	if len(terms) == 0 {
+		return 0
+	}
+	f := strings.ToLower(filename)
+	c := strings.ToLower(collectionName)
+	ct := strings.ToLower(content)
+	var score float64
+	for _, term := range terms {
+		if strings.Contains(f, term) {
+			score += 0.35
+		}
+		if strings.Contains(c, term) {
+			score += 0.15
+		}
+		if strings.Contains(ct, term) {
+			score += 0.25
+		}
+	}
+	score = score/float64(len(terms)) + normalizeMatchScore(similarity)*0.15
+	if strings.Contains(f, strings.ToLower(query)) {
+		score += 0.2
+	}
+	if score > 1 {
+		score = 1
+	}
+	return score
 }
 
 func (s *ChatService) ensureAgent() *agent.Agent {
@@ -1100,6 +1443,14 @@ func (s *ChatService) GetSessionSources(sessionID int64) ([]store.SourceChunkRef
 	return result, nil
 }
 
+// GetSessionMemory returns persisted rolling conversation memory rows for a session.
+func (s *ChatService) GetSessionMemory(sessionID int64) ([]store.ChatSessionMemory, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	return store.ListChatSessionMemory(s.DB, sessionID)
+}
+
 //  Helpers
 
 func (s *ChatService) emit(name string, data ...any) {
@@ -1146,17 +1497,185 @@ func (s *ChatService) loadConversationHistory(sessionID int64) []llama.ChatMessa
 	return history
 }
 
+func (s *ChatService) loadConversationMemory(sessionID int64) string {
+	if s.DB == nil || sessionID <= 0 {
+		return ""
+	}
+	mem, err := store.GetLatestChatSessionMemory(s.DB, sessionID, "rolling_summary")
+	if err != nil || mem == nil {
+		return ""
+	}
+	return strings.TrimSpace(mem.Summary)
+}
+
+func (s *ChatService) persistConversationMemory(sessionID, collectionID, sourceMessageID, messageID int64, prompt, response string, evidence EvidenceBundle, plan agent.Plan, history []llama.ChatMessage) {
+	if s.DB == nil || sessionID <= 0 {
+		return
+	}
+	previous := s.loadConversationMemory(sessionID)
+	summary := buildConversationMemorySummary(previous, prompt, response, evidence, plan, history)
+	if strings.TrimSpace(summary) == "" {
+		return
+	}
+	if err := store.UpsertChatSessionMemory(s.DB, sessionID, collectionID, "rolling_summary", summary, sourceMessageID); err != nil {
+		return
+	}
+	if messageID > 0 {
+		_ = store.UpsertChatSessionMemory(s.DB, sessionID, collectionID, "last_turn", summarizeConversationTurn(prompt, response, evidence, plan, history), messageID)
+	}
+}
+
+func buildConversationMemorySummary(previous, prompt, response string, evidence EvidenceBundle, plan agent.Plan, history []llama.ChatMessage) string {
+	lines := uniqueMemoryLines(splitMemoryLines(previous))
+	turn := summarizeConversationTurn(prompt, response, evidence, plan, history)
+	if turn != "" {
+		lines = append(lines, turn)
+	}
+	lines = dedupeRecentMemoryLines(lines)
+	return joinMemoryLines(lines, 1200)
+}
+
+func summarizeConversationTurn(prompt, response string, evidence EvidenceBundle, plan agent.Plan, history []llama.ChatMessage) string {
+	parts := make([]string, 0, 4)
+	if plan.UseRetrieval {
+		parts = append(parts, "Retrieved answer")
+	} else if plan.UseMemory {
+		parts = append(parts, "Memory-based answer")
+	} else {
+		parts = append(parts, "Direct answer")
+	}
+	if topic := trimSummaryText(prompt, 120); topic != "" {
+		parts = append(parts, "User: "+topic)
+	}
+	if outcome := trimSummaryText(response, 160); outcome != "" {
+		parts = append(parts, "Assistant: "+outcome)
+	}
+	if sources := memorySourceNames(evidence); len(sources) > 0 {
+		parts = append(parts, "Sources: "+strings.Join(sources, ", "))
+	}
+	if len(history) > 0 && len(parts) < 4 {
+		for i := len(history) - 1; i >= 0 && len(parts) < 4; i-- {
+			if snippet := trimSummaryText(history[i].Content, 80); snippet != "" {
+				parts = append(parts, snippet)
+			}
+		}
+	}
+	return strings.Join(parts, " | ")
+}
+
+func splitMemoryLines(summary string) []string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return nil
+	}
+	parts := strings.Split(summary, "\n")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func uniqueMemoryLines(lines []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		out = append(out, line)
+	}
+	return out
+}
+
+func dedupeRecentMemoryLines(lines []string) []string {
+	if len(lines) <= 8 {
+		return lines
+	}
+	return lines[len(lines)-8:]
+}
+
+func joinMemoryLines(lines []string, maxChars int) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		candidate := line
+		if out.Len() > 0 {
+			candidate = "\n" + line
+		}
+		if maxChars > 0 && out.Len()+len(candidate) > maxChars {
+			break
+		}
+		if out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(line)
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func trimSummaryText(text string, max int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || max <= 0 {
+		return text
+	}
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) <= max {
+		return text
+	}
+	if max <= 3 {
+		return text[:max]
+	}
+	return text[:max-3] + "..."
+}
+
+func memorySourceNames(evidence EvidenceBundle) []string {
+	if len(evidence.Nodes) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var names []string
+	for _, node := range evidence.Nodes {
+		name := strings.TrimSpace(node.Filename)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+		if len(names) >= 3 {
+			break
+		}
+	}
+	return names
+}
+
 type chunkRef struct {
 	refNum int
 	chunk  store.ScoredChunk
 }
 
-func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, effort agent.EvidenceEffort, chunks []store.ScoredChunk, prompt string, history []llama.ChatMessage, ctxSize int, collectionName string, workspaceMemory string, evidenceSummary string) ([]llama.ChatMessage, []chunkRef) {
+func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, bundle EvidenceBundle, prompt string, history []llama.ChatMessage, memoryContext string, ctxSize int, collectionName string) ([]llama.ChatMessage, []chunkRef) {
 	// Scale character budgets proportionally to context window size
 	ratio := float64(ctxSize) / float64(defaultContextSize)
-	effortMultiplier := effort.ContextMultiplier()
-	scaledMaxTotal := int(float64(maxTotalChars) * ratio * effortMultiplier)
-	scaledMaxContext := int(float64(maxContextChars) * ratio * effortMultiplier)
+	scaledMaxTotal := int(float64(maxTotalChars) * ratio)
+	scaledMaxContext := int(float64(maxContextChars) * ratio)
 
 	// Budget: leave 50% of context for the response itself
 	responseBudget := ctxSize * 2 // ~2 chars per token
@@ -1165,41 +1684,36 @@ func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, effort agent.Evid
 		promptBudget = responseBudget
 	}
 
-	// Build context string from RAG chunks with numbered references, capped
-	var contextBuilder strings.Builder
-	var sourceRefs []chunkRef
-	for i, chunk := range chunks {
-		if chunk.Content == "" {
-			continue
+	contextString := ""
+	if plan.UseRetrieval {
+		contextString = bundle.ContextString(scaledMaxContext)
+		if contextString == "" {
+			contextString = "No retrieved evidence was available."
 		}
-		refNum := i + 1
-		if contextBuilder.Len()+len(chunk.Content)+10 > scaledMaxContext {
-			if contextBuilder.Len() > 0 {
-				break
-			}
-			trunc := chunk.Content
-			if len(trunc) > scaledMaxContext-20 {
-				trunc = trunc[:scaledMaxContext-20] + "..."
-			}
-			contextBuilder.WriteString(fmt.Sprintf("[%d] %s\n", refNum, trunc))
-			sourceRefs = append(sourceRefs, chunkRef{refNum: refNum, chunk: chunk})
-			break
-		}
-		contextBuilder.WriteString(fmt.Sprintf("[%d] %s\n", refNum, chunk.Content))
-		sourceRefs = append(sourceRefs, chunkRef{refNum: refNum, chunk: chunk})
 	}
+	if scaledMaxContext > 0 && len(contextString) > scaledMaxContext {
+		contextString = contextString[:scaledMaxContext]
+	}
+	var contextBuilder strings.Builder
+	contextBuilder.WriteString(contextString)
+	sourceRefs := bundle.sourceRefs()
 
 	systemPrompt := "You are a helpful AI assistant."
 	if ag != nil {
-		systemPrompt = ag.RenderSystemPrompt(plan, collectionName, contextBuilder.String(), workspaceMemory, evidenceSummary)
+		systemPrompt = ag.RenderSystemPrompt(plan, collectionName, memoryContext, contextBuilder.String())
 	}
 	if systemPrompt == "" {
 		systemPrompt = "You are a helpful AI assistant."
 	}
 
-	messages := []llama.ChatMessage{{Role: "system", Content: systemPrompt}}
+	messages := []llama.ChatMessage{
+		{Role: "system", Content: systemPrompt},
+	}
 
+	// Track remaining budget
 	remaining := promptBudget - len(systemPrompt) - len(prompt) - 50
+
+	// Include conversation history, respecting budget
 	if history != nil {
 		for _, h := range history {
 			if remaining <= 0 {
@@ -1215,6 +1729,8 @@ func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, effort agent.Evid
 		}
 	}
 
+	// Add current user prompt
 	messages = append(messages, llama.ChatMessage{Role: "user", Content: prompt})
+
 	return messages, sourceRefs
 }

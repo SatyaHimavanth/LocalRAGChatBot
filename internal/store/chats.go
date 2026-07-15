@@ -66,22 +66,6 @@ func scanChatSessions(rows *sql.Rows) ([]ChatSession, error) {
 	return sessions, rows.Err()
 }
 
-func GetChatSessionByID(db *sql.DB, id int64) (*ChatSession, error) {
-	row := db.QueryRow("SELECT id, title, collection_id, COALESCE(current_leaf_message_id, 0), created_at, COALESCE(archived,0), COALESCE(pinned,0) FROM chat_sessions WHERE id = ?", id)
-	var s ChatSession
-	if err := row.Scan(&s.ID, &s.Title, &s.CollectionID, &s.CurrentLeafMessageID, &s.CreatedAt, &s.Archived, &s.Pinned); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no such column") {
-			row = db.QueryRow("SELECT id, title, collection_id, 0, created_at, COALESCE(archived,0), COALESCE(pinned,0) FROM chat_sessions WHERE id = ?", id)
-			if err := row.Scan(&s.ID, &s.Title, &s.CollectionID, &s.CurrentLeafMessageID, &s.CreatedAt, &s.Archived, &s.Pinned); err != nil {
-				return nil, err
-			}
-			return &s, nil
-		}
-		return nil, err
-	}
-	return &s, nil
-}
-
 func UpdateChatSessionTitle(db *sql.DB, id int64, title string) error {
 	_, err := db.Exec("UPDATE chat_sessions SET title = ? WHERE id = ?", title, id)
 	return err
@@ -111,10 +95,10 @@ func DeleteChatSession(db *sql.DB, id int64) error {
 	if _, err := db.Exec("DELETE FROM chat_message_sources WHERE session_id = ?", id); err != nil {
 		return err
 	}
-	if _, err := db.Exec("DELETE FROM chat_messages WHERE session_id = ?", id); err != nil {
+	if _, err := db.Exec("DELETE FROM chat_session_memory WHERE session_id = ?", id); err != nil {
 		return err
 	}
-	if _, err := db.Exec("DELETE FROM workspace_memory WHERE session_id = ?", id); err != nil {
+	if _, err := db.Exec("DELETE FROM chat_messages WHERE session_id = ?", id); err != nil {
 		return err
 	}
 	_, err := db.Exec("DELETE FROM chat_sessions WHERE id = ?", id)
@@ -206,11 +190,6 @@ func getChatMessageByID(db *sql.DB, sessionID, messageID int64) (*ChatMessage, e
 	return &msg, nil
 }
 
-// GetChatMessageByID returns one message by session and message id.
-func GetChatMessageByID(db *sql.DB, sessionID, messageID int64) (*ChatMessage, error) {
-	return getChatMessageByID(db, sessionID, messageID)
-}
-
 func getLegacyChatMessages(db *sql.DB, sessionID int64) ([]ChatMessage, error) {
 	rows, err := db.Query("SELECT id, session_id, role, content, created_at, COALESCE(cancelled,0) FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC, id ASC", sessionID)
 	if err != nil {
@@ -294,39 +273,4 @@ func boolToInt(v bool) int64 {
 		return 1
 	}
 	return 0
-}
-
-func scanChatMessages(rows *sql.Rows) ([]ChatMessage, error) {
-	var messages []ChatMessage
-	for rows.Next() {
-		var m ChatMessage
-		var cancelledInt int64
-		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.CreatedAt, &cancelledInt, &m.ParentMessageID, &m.AgentMetadataJSON); err != nil {
-			return nil, err
-		}
-		m.Cancelled = cancelledInt != 0
-		messages = append(messages, m)
-	}
-	return messages, rows.Err()
-}
-
-// GetChatMessagesFlat returns every message in a session in chronological order.
-// It is useful for branch explorers and conversation-tree UIs.
-func GetChatMessagesFlat(db *sql.DB, sessionID int64) ([]ChatMessage, error) {
-	rows, err := db.Query(`SELECT id, session_id, role, content, created_at, COALESCE(cancelled,0), COALESCE(parent_message_id,0), COALESCE(agent_metadata_json,'')
-		FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC, id ASC`, sessionID)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no such column") {
-			return getLegacyChatMessages(db, sessionID)
-		}
-		return nil, err
-	}
-	defer rows.Close()
-	return scanChatMessages(rows)
-}
-
-// SetSessionLeafMessageID updates the active branch for a session.
-func SetSessionLeafMessageID(db *sql.DB, sessionID, leafMessageID int64) error {
-	_, err := db.Exec("UPDATE chat_sessions SET current_leaf_message_id = ? WHERE id = ?", leafMessageID, sessionID)
-	return err
 }

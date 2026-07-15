@@ -1,5 +1,7 @@
 ﻿import { ChangeEvent, memo, useCallback, useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { Events } from "@wailsio/runtime";
+import { CheckFileHash } from "../../bindings/changeme/internal/app/chatservice";
 import { FileUploadItem, Theme, themeVars, IncompleteJob } from "../types";
 import { Modal } from "./Modal";
 import { I } from "./Icons";
@@ -17,6 +19,12 @@ interface FileUploadModalProps {
 }
 
 const ACTIVE_STATUSES: FileUploadItem["status"][] = ["processing", "queued", "embedding", "staged"];
+
+const sha256Hex = async (file: File) => {
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+};
 
 const mapIncompleteJobToFile = (job: IncompleteJob): FileUploadItem => {
   const status = (job.status || "queued").toLowerCase();
@@ -43,6 +51,8 @@ const mapIncompleteJobToFile = (job: IncompleteJob): FileUploadItem => {
     progressPct: job.progressPct ?? 0,
     progressMsg,
     message: job.errorMessage || undefined,
+    replace: false,
+    duplicateStatus: undefined,
   };
 };
 
@@ -60,10 +70,12 @@ const UploadFileRow = memo(function UploadFileRow({
   item,
   theme,
   onRemove,
+  onToggleReplace,
 }: {
   item: FileUploadItem;
   theme: Theme;
   onRemove: (id: string) => void;
+  onToggleReplace: (id: string) => void;
 }) {
   const T = themeVars[theme];
   const statusLabel = getFileStatusLabel(item);
@@ -83,7 +95,16 @@ const UploadFileRow = memo(function UploadFileRow({
           {item.status === "pending" && <span style={{ color: T.text3 }}>{statusLabel}</span>}
           {isActive && <I.Spinner />}
           {(item.status === "success" || item.status === "replaced") && (<span style={{color: "rgba(34,197,94,0.9)",display: "flex",alignItems: "center",gap: 4,fontWeight: 500,}}><I.Check />{statusLabel}</span>)}
-          {item.status === "duplicate" && <span style={{ color: "rgba(234,179,8,0.8)", fontSize: 10 }}>{statusLabel}</span>}
+          {item.duplicateStatus === "duplicate" && <span style={{ color: "rgba(234,179,8,0.8)", fontSize: 10 }}>Preflight duplicate</span>}
+          {item.duplicateStatus === "duplicate" && (
+            <button
+              onClick={() => onToggleReplace(item.id)}
+              style={{ padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(234,179,8,0.25)", cursor: "pointer", background: item.replace ? "rgba(234,179,8,0.18)" : "transparent", color: T.text, fontSize: 10 }}
+              title={item.replace ? "Will replace existing document" : "Click to replace existing document"}
+            >
+              {item.replace ? "Replacing" : "Replace"}
+            </button>
+          )}
           {(item.status === "error" || item.status === "failed") && <span style={{ color: "rgba(239,68,68,0.8)", fontSize: 10 }} title={item.message}>{statusLabel}</span>}
           {item.status === "pending" && (
             <button
@@ -98,6 +119,19 @@ const UploadFileRow = memo(function UploadFileRow({
         </div>
       </div>
 
+      {item.duplicateStatus === "duplicate" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, padding: "6px 8px", borderRadius: 6, background: "rgba(234,179,8,0.08)", border: "1px solid rgba(234,179,8,0.2)" }}>
+          <span style={{ color: "rgba(234,179,8,0.9)" }}>Duplicate detected{item.duplicateMessage ? ` · ${item.duplicateMessage}` : ""}</span>
+          <button
+            onClick={() => onRemove(item.id)}
+            style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: T.text3, padding: 2 }}
+            aria-label={`Remove ${item.filename}`}
+            title="Remove from batch"
+          >
+            <I.X />
+          </button>
+        </div>
+      )}
       <div style={{ height: 14, display: "flex", alignItems: "center", gap: 8, fontSize: 10, color: T.text3 }}>
         {isActive ? (
           <>
@@ -145,6 +179,25 @@ export function FileUploadModal({
 
   const isActiveFileStatus = (status: FileUploadItem["status"]): status is "processing" | "queued" | "embedding" | "staged" =>
     status === "processing" || status === "queued" || status === "embedding" || status === "staged";
+
+  const preflightDuplicateCheck = useCallback(async (selected: FileUploadItem[]) => {
+    for (const item of selected) {
+      if (!item.file) continue;
+      try {
+        const hash = await sha256Hex(item.file);
+        const dup = await CheckFileHash(hash, collectionId);
+        if (!dup) {
+          setFiles((prev) => prev.map((f) => f.id === item.id ? { ...f, duplicateStatus: "clear", duplicateMessage: "" } : f));
+          continue;
+        }
+        const existingId = Number((dup as any).existingDocId ?? (dup as any).ExistingDocID ?? 0) || undefined;
+        const message = (dup as any).message || "Possible duplicate detected";
+        setFiles((prev) => prev.map((f) => f.id === item.id ? { ...f, duplicateStatus: "duplicate", duplicateMessage: message, existingDocId: existingId, replace: f.replace ?? false } : f));
+      } catch {
+        setFiles((prev) => prev.map((f) => f.id === item.id ? { ...f, duplicateStatus: "clear" } : f));
+      }
+    }
+  }, [collectionId]);
 
   useEffect(() => {
     if (!open) return;
@@ -234,10 +287,25 @@ export function FileUploadModal({
   useEffect(() => {
     if (!open) return;
     setFiles(prev => {
-      const existingIds = new Set(prev.map(f => f.docId ? `job-${f.docId}` : f.id));
-      const jobs = incompleteJobs.map(mapIncompleteJobToFile).filter(job => !existingIds.has(job.id));
-      if (jobs.length === 0) return prev;
-      return [...prev, ...jobs];
+      const normalized = (name: string) => name.trim().toLowerCase();
+      const seen = new Set<string>();
+      const next: FileUploadItem[] = [];
+
+      for (const item of prev) {
+        const key = item.docId ? `doc:${item.docId}` : `file:${normalized(item.filename)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        next.push(item);
+      }
+
+      for (const job of incompleteJobs.map(mapIncompleteJobToFile)) {
+        const key = job.docId ? `doc:${job.docId}` : `file:${normalized(job.filename)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        next.push(job);
+      }
+
+      return next;
     });
   }, [open, incompleteJobs]);
 
@@ -255,16 +323,17 @@ export function FileUploadModal({
 
   const handleSelect = (e: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(e.target.files || []) as File[];
-    setFiles(prev => [
-      ...prev,
-      ...selected.map(f => ({
-        id: crypto.randomUUID(),
-        file: f,
-        filename: f.name,
-        status: "pending" as const,
-        progressPct: 0,
-      })),
-    ]);
+    const items: FileUploadItem[] = selected.map(f => ({
+      id: crypto.randomUUID(),
+      file: f,
+      filename: f.name,
+      status: "pending" as const,
+      progressPct: 0,
+      replace: false,
+      duplicateStatus: "checking",
+    }));
+    setFiles(prev => [...prev, ...items]);
+    void preflightDuplicateCheck(items);
     if (e.target) e.target.value = "";
   };
 
@@ -275,7 +344,7 @@ export function FileUploadModal({
     setFiles(prev => prev.map(f => f.status === "pending" ? { ...f, status: "processing", progressMsg: "Waiting to stage…", progressPct: 0 } : f));
 
     try {
-      const result: any = await onStartBatch(pending.map(f => ({ file: f.file!, replace: false })));
+      const result: any = await onStartBatch(pending.map(f => ({ file: f.file!, replace: !!f.replace })));
       const items: any[] = result?.items || result?.Items || [];
       const cancelled = !!(result?.cancelled ?? result?.Cancelled);
 
@@ -315,9 +384,12 @@ export function FileUploadModal({
   };
 
   const removeFile = useCallback((id: string) => setFiles(prev => prev.filter(f => f.id !== id)), []);
+  const toggleReplace = useCallback((id: string) => setFiles(prev => prev.map(f => f.id === id ? { ...f, replace: !f.replace } : f)), []);
   const pendingCount = files.filter(f => f.status === "pending").length;
   const errorCount = files.filter(f => f.status === "error").length;
   const successCount = files.filter(f => f.status === "success" || f.status === "replaced").length;
+  const duplicateCount = files.filter(f => f.duplicateStatus === "duplicate").length;
+  const replaceCount = files.filter(f => f.replace).length;
   const hasCompleted = files.length > 0 && pendingCount === 0 && !uploading && !isIngesting;
   const isProcessing = uploading || pasting || isIngesting || files.some(f => isActiveFileStatus(f.status));
   const busy = uploading || pasting || isIngesting;
@@ -383,6 +455,13 @@ export function FileUploadModal({
         <div style={{ fontSize: 12, color: T.text3 }}>
           Target: <strong style={{ color: T.text }}>{collectionName}</strong>
         </div>
+        {duplicateCount > 0 && (
+          <div style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(234,179,8,0.22)", background: "rgba(234,179,8,0.06)", color: T.text2, fontSize: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span>Preflight found {duplicateCount} potential duplicate{duplicateCount > 1 ? "s" : ""}.</span>
+            <span style={{ color: T.text3 }}>Toggle Replace on any row before staging.</span>
+            {replaceCount > 0 && <span style={{ color: "rgba(99,102,241,0.9)" }}>{replaceCount} marked to replace</span>}
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 4, background: T.bg2, borderRadius: 8, padding: 3, flexShrink: 0 }}>
           {(["upload", "paste"] as const).map(m => (
@@ -439,7 +518,7 @@ export function FileUploadModal({
             <div style={{ flex: 1, minHeight: 260, overflowY: "auto" , overflowX: "hidden", paddingRight: 2 }}>
               {files.length > 0 ? (
                 files.map(f => (
-                  <UploadFileRow key={f.id} item={f} theme={theme} onRemove={removeFile} />
+                  <UploadFileRow key={f.id} item={f} theme={theme} onRemove={removeFile} onToggleReplace={toggleReplace} />
                 ))
               ) : (
                 <div style={{ minHeight: 1 }} />
@@ -448,9 +527,19 @@ export function FileUploadModal({
 
             <div style={{ minHeight: 58, display: "flex", alignItems: "center" }}>
               {pendingCount > 0 && !busy && (
-                <button onClick={uploadAll} style={btnStyle}>
-                  Stage & Embed {pendingCount} File{pendingCount > 1 ? "s" : ""}
-                </button>
+                <div style={{ width: "100%", display: "flex", gap: 8, flexDirection: "column" }}>
+                  {duplicateCount > 0 && (
+                    <button
+                      onClick={() => setFiles(prev => prev.map(f => f.duplicateStatus === "duplicate" ? { ...f, replace: true } : f))}
+                      style={{ ...btnStyle, background: "rgba(234,179,8,0.75)" }}
+                    >
+                      Mark all duplicates for replace
+                    </button>
+                  )}
+                  <button onClick={uploadAll} style={btnStyle}>
+                    Stage & Embed {pendingCount} File{pendingCount > 1 ? "s" : ""}
+                  </button>
+                </div>
               )}
 
               {busy && mode === "upload" && (
@@ -537,7 +626,7 @@ export function FileUploadModal({
   );
 }
 
-const btnStyle: React.CSSProperties = {
+const btnStyle: CSSProperties = {
   width: "100%",
   minHeight: 38,
   padding: "10px",

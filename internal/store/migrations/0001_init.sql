@@ -1,32 +1,71 @@
 -- 0001_init.sql
 CREATE TABLE IF NOT EXISTS collections (
-	id INTEGER PRIMARY KEY,
-	name TEXT NOT NULL,
-	created_at INTEGER NOT NULL
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+
+    embedding_model TEXT NOT NULL DEFAULT '',
+    embedding_dims INTEGER NOT NULL DEFAULT 0,
+    vector_backend TEXT NOT NULL DEFAULT 'sqlite-vec',
+
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS documents (
-	id INTEGER PRIMARY KEY,
-	collection_id INTEGER NOT NULL REFERENCES collections(id),
-	filename TEXT NOT NULL,
-	summary TEXT,
-	hash TEXT NOT NULL DEFAULT '',
-	content TEXT NOT NULL DEFAULT '',
-	created_at INTEGER NOT NULL,
-	-- Ingest job lifecycle: staging | queued | embedding | ready | failed
-	status TEXT NOT NULL DEFAULT 'ready',
-	expected_chunks INTEGER NOT NULL DEFAULT 0,
-	batch_id TEXT NOT NULL DEFAULT '',
-	error_message TEXT NOT NULL DEFAULT '',
-	updated_at INTEGER NOT NULL DEFAULT 0
+    id INTEGER PRIMARY KEY,
+
+    collection_id INTEGER NOT NULL REFERENCES collections(id),
+
+    filename TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+
+    summary TEXT,
+
+    hash TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+
+    source_type TEXT NOT NULL DEFAULT '',
+    source_size_bytes INTEGER NOT NULL DEFAULT 0,
+
+    word_count INTEGER NOT NULL DEFAULT 0,
+    line_count INTEGER NOT NULL DEFAULT 0,
+    character_count INTEGER NOT NULL DEFAULT 0,
+    paragraph_count INTEGER NOT NULL DEFAULT 0,
+
+    status TEXT NOT NULL DEFAULT 'ready',
+    expected_chunks INTEGER NOT NULL DEFAULT 0,
+    batch_id TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
-	id INTEGER PRIMARY KEY,
-	document_id INTEGER NOT NULL REFERENCES documents(id),
-	collection_id INTEGER NOT NULL,
-	content TEXT NOT NULL,
-	ord INTEGER NOT NULL
+    id INTEGER PRIMARY KEY,
+
+    document_id INTEGER NOT NULL REFERENCES documents(id),
+    collection_id INTEGER NOT NULL,
+
+    content TEXT NOT NULL,
+
+    ord INTEGER NOT NULL,
+
+    chunk_hash TEXT NOT NULL DEFAULT '',
+    embedding_hash TEXT NOT NULL DEFAULT '',
+
+    summary TEXT NOT NULL DEFAULT '',
+
+    level INTEGER NOT NULL DEFAULT 0,
+    role TEXT NOT NULL DEFAULT 'leaf',
+
+    parent_ord INTEGER NOT NULL DEFAULT -1,
+    prev_ord INTEGER NOT NULL DEFAULT -1,
+    next_ord INTEGER NOT NULL DEFAULT -1,
+
+    heading_path TEXT NOT NULL DEFAULT '',
+
+    updated_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -63,3 +102,16 @@ CREATE TABLE IF NOT EXISTS chat_message_sources (
 	content TEXT NOT NULL,
 	ref_number INTEGER NOT NULL
 );
+
+
+CREATE INDEX IF NOT EXISTS idx_collections_vector_backend
+ON collections(vector_backend);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_parent_ord
+ON chunks(document_id,parent_ord);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_role
+ON chunks(document_id,role,ord);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_level
+ON chunks(document_id,level,ord);

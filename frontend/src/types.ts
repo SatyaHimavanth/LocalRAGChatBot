@@ -1,24 +1,21 @@
 export interface Message { id: string; sender: "user" | "ai" | "system"; text: string; cancelled?: boolean; parentMessageId?: number; metadata?: AgentResult; }
 export interface Chat { id: number; title: string; messages: Message[]; createdAt: number; archived: boolean; pinned: boolean; currentLeafMessageId?: number; messageSources?: Record<number, SourceRef[]>; agentPlan?: AgentPlan; lastAgentResult?: AgentResult; }
 export interface SourceRef { id?: number; refNumber: number; chunkId: number; content: string; filename: string; collectionId: number; collectionName: string; similarity: number; }
-export interface Collection { id: number; name: string; docCount: number; }
-export interface CollectionInsight {
-  id: number;
-  name: string;
-  createdAt: number;
-  totalDocumentCount: number;
-  readyDocumentCount: number;
-  incompleteDocumentCount: number;
-  chunkCount: number;
-  chatCount: number;
-  latestDocumentUpdatedAt: number;
-}
+export interface Collection { id: number; name: string; docCount: number; embeddingModel?: string; embeddingDims?: number; vectorBackend?: string; createdAt?: number; updatedAt?: number; }
 export interface DocRecord {
   id: number;
   collectionId: number;
   filename: string;
   hash: string;
   content: string;
+  summary?: string;
+  sourceType?: string;
+  sourceSizeBytes?: number;
+  wordCount?: number;
+  lineCount?: number;
+  characterCount?: number;
+  paragraphCount?: number;
+  title?: string;
   createdAt: number;
   chunkCount: number;
   status?: string;
@@ -27,28 +24,66 @@ export interface DocRecord {
   errorMessage?: string;
   updatedAt?: number;
 }
-export interface SearchResult { content: string; score: number; searchType: string; collectionId: number; collectionName: string; filename: string; title?: string; sectionPath?: string; chunkSummary?: string; chunkId: number; }
+export type SearchScope = "collection" | "all" | "workspace" | "metadata";
+export interface SearchResult { content: string; score: number; searchType: string; collectionId: number; collectionName: string; filename: string; chunkId: number; }
+export interface ChunkRecord {
+  id: number;
+  documentId: number;
+  collectionId: number;
+  content: string;
+  summary: string;
+  ord: number;
+  level: number;
+  role: string;
+  parentOrd: number;
+  prevOrd: number;
+  nextOrd: number;
+  chunkHash: string;
+  embeddingHash: string;
+  headingPath: string;
+  updatedAt: number;
+}
+export interface ExtensionHook {
+  id: number;
+  hookKey: string;
+  name: string;
+  hookType: string;
+  surface: string;
+  description: string;
+  state: string;
+  enabled: boolean;
+  configJson: string;
+  lastRunAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface EventLogEntry {
+  id: number;
+  eventKey: string;
+  title: string;
+  detail: string;
+  severity: string;
+  scope: string;
+  collectionId: number;
+  chatId: number;
+  docId: number;
+  batchId: string;
+  createdAt: number;
+}
+
 export interface IngestProgress { step: string; label: string; pct: number; detail: string; phase?: string; }
 export interface ToastMsg { id: string; type: "success"|"error"|"info"; message: string; }
 
 export type AgentIntent = "greeting" | "general" | "conversation" | "retrieval" | "follow_up" | "comparison" | "summarization" | "tool_call" | "unknown";
 export type AgentPhase = "thinking" | "planning" | "memory" | "retrieval" | "tool" | "generation" | "done";
-export type EvidenceEffort = "low" | "medium" | "high";
-export type RetrievalScope = "current" | "all";
 
 export interface AgentPlan {
   intent: AgentIntent;
   useRetrieval: boolean;
   useMemory: boolean;
-  useWorkspaceMemory: boolean;
   useDirect: boolean;
   topK: number;
-  evidenceEffort: EvidenceEffort;
-  evidenceCandidateLimit?: number;
-  evidencePasses?: number;
-  evidenceTokenBudget?: number;
-  evidenceCoverageTarget?: number;
-  evidenceTimeBudgetMs?: number;
   retrievalQuery?: string;
   reason?: string;
 }
@@ -57,75 +92,22 @@ export interface AgentResult {
   cancelled: boolean;
   usedRetrieval: boolean;
   usedMemory: boolean;
-  usedWorkspaceMemory: boolean;
   usedDirect: boolean;
   sourceCount: number;
-  evidenceEffort: EvidenceEffort;
-  evidenceCoverage?: number;
-  evidencePasses?: number;
-  evidenceCandidates?: number;
-  evidenceExpanded?: number;
-  evidenceCompressed?: number;
-  evidenceTokens?: number;
-  evidenceBudgetTokens?: number;
-  evidenceTimeBudgetMs?: number;
-  evidenceSummary?: string;
-  verificationScore?: number;
-  verificationVerdict?: string;
-  verificationSummary?: string;
-  verificationIssues?: string[];
+  evidenceCount?: number;
+  confidence?: number;
+  verified?: boolean;
+  verification?: string;
+  evidenceGaps?: string[];
   reason?: string;
   retrievalQuery?: string;
   topK?: number;
-}
-
-export interface WorkspaceMemorySnapshot {
-  sessionId: number;
-  collectionId: number;
-  collectionName: string;
-  summary: string;
-  notes: string;
-  lastMessageId: number;
-  updatedAt: number;
-  recentQuestions: string[];
-  recentDocuments: string[];
-  latestAssistant?: string;
-  latestSignal?: string;
-  hasSummary?: boolean;
-  hasNotes?: boolean;
-}
-
-export interface DiagnosticsSnapshot {
-  dbReady: boolean;
-  goVersion: string;
-  goos: string;
-  goarch: string;
-  numCpu: number;
-  totalRamGb: number;
-  recommendedContextSize: number;
-  memoryAllocMb: number;
-  memorySysMb: number;
-  activeGenerations: number;
-  ingestActive: boolean;
-  collections: number;
-  chats: number;
-  messages: number;
-  documents: number;
-  readyDocuments: number;
-  incompleteDocuments: number;
-  chunks: number;
-  messageSources: number;
-  dbPageSize: number;
-  dbPageCount: number;
-  dbApproxBytes: number;
-  collectedAtUnix: number;
 }
 
 export interface AgentStatus {
   phase: AgentPhase;
   label: string;
   detail?: string;
-  effort?: EvidenceEffort;
 }
 export interface FileUploadItem {
   id: string;
@@ -136,6 +118,10 @@ export interface FileUploadItem {
   docId?: number;
   progressMsg?: string;
   progressPct?: number;
+  replace?: boolean;
+  duplicateStatus?: "checking" | "clear" | "duplicate";
+  duplicateMessage?: string;
+  existingDocId?: number;
 }
 export interface IncompleteJob {
   docId: number;
@@ -149,6 +135,17 @@ export interface IncompleteJob {
   progressPct: number;
   updatedAt: number;
   createdAt: number;
+}
+
+export interface IngestLogEntry {
+  id: string;
+  timestamp: number;
+  level: "info" | "warn" | "error";
+  stage: string;
+  message: string;
+  filename?: string;
+  collectionId?: number;
+  batchId?: string;
 }
 
 export type Theme = "dark" | "light";

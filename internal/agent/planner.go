@@ -8,31 +8,22 @@ import (
 
 // Request is the minimum input required for planning.
 type Request struct {
-	Prompt         string
-	History        []llama.ChatMessage
-	CollectionID   int64
-	CollectionName string
-	RetrievalScope string
-	HasDocuments   bool
-	Effort         EvidenceEffort
+	Prompt          string
+	History         []llama.ChatMessage
+	CollectionID    int64
+	CollectionName  string
+	HasDocuments    bool
+	WorkspaceMemory string
 }
 
 // Plan describes how the agent should answer the request.
 type Plan struct {
-	UseRetrieval           bool
-	RetrievalQuery         string
-	RetrievalScope         string
-	UseMemory              bool
-	UseWorkspaceMemory     bool
-	UseDirect              bool
-	TopK                   int
-	EvidenceEffort         EvidenceEffort
-	EvidenceCandidateLimit int
-	EvidencePasses         int
-	EvidenceTokenBudget    int
-	EvidenceCoverageTarget float64
-	EvidenceTimeBudgetMS   int64
-	Reason                 string
+	UseRetrieval   bool
+	RetrievalQuery string
+	UseMemory      bool
+	UseDirect      bool
+	TopK           int
+	Reason         string
 }
 
 // Planner decides whether to answer directly or use retrieval.
@@ -47,36 +38,18 @@ type HeuristicPlanner struct {
 
 // NewHeuristicPlanner returns a sensible default planner.
 func NewHeuristicPlanner() *HeuristicPlanner {
-	return &HeuristicPlanner{TopK: 8}
+	return &HeuristicPlanner{TopK: 5}
 }
 
 func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
 	prompt := normalize(req.Prompt)
-	effort := NormalizeEvidenceEffort(req.Effort.String())
 	plan := Plan{
-		UseDirect:              true,
-		TopK:                   p.TopK,
-		EvidenceEffort:         effort,
-		EvidenceCandidateLimit: effort.CandidatePoolSize(),
-		EvidencePasses:         effort.EvidencePasses(),
-		EvidenceTokenBudget:    effort.MaxEvidenceTokens(),
-		EvidenceCoverageTarget: effort.CoverageThreshold(),
-		EvidenceTimeBudgetMS:   effort.MaxEvidenceLatency().Milliseconds(),
-		RetrievalScope:         NormalizeRetrievalScope(req.RetrievalScope).String(),
+		UseDirect: true,
+		TopK:      p.TopK,
 	}
 
 	if prompt == "" {
 		plan.Reason = "empty prompt"
-		return plan
-	}
-
-	plan.TopK = effort.TopK()
-
-	if looksLikeHistoryRequest(prompt) {
-		plan.UseWorkspaceMemory = true
-		plan.UseMemory = true
-		plan.UseDirect = false
-		plan.Reason = "history request"
 		return plan
 	}
 
@@ -88,11 +61,10 @@ func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
 		return plan
 	}
 
-	if looksLikeGeneralFollowUp(prompt, req.History) {
+	if looksLikeGeneralFollowUp(prompt, req.History) || (strings.TrimSpace(req.WorkspaceMemory) != "" && looksLikeFollowUp(prompt)) {
 		plan.UseMemory = true
-		plan.UseWorkspaceMemory = true
 		plan.UseDirect = false
-		plan.Reason = "history answerable follow-up"
+		plan.Reason = "history or workspace memory answerable follow-up"
 		return plan
 	}
 
@@ -148,18 +120,6 @@ func looksLikeGeneralFollowUp(text string, history []llama.ChatMessage) bool {
 	return looksLikeFollowUp(text)
 }
 
-func looksLikeHistoryRequest(text string) bool {
-	patterns := []string{
-		"my previous questions", "previous questions", "earlier questions", "what did i ask", "what have i asked", "question history", "conversation history", "earlier turns", "prior questions", "what was my last question", "summarize our conversation", "summarise our conversation",
-	}
-	for _, p := range patterns {
-		if strings.Contains(text, p) {
-			return true
-		}
-	}
-	return false
-}
-
 func maybeDocumentRelated(text string) bool {
 	patterns := []string{"explain", "tell me", "show me", "what is", "what are", "how does", "why did", "compare", "difference", "details"}
 	for _, p := range patterns {
@@ -175,8 +135,11 @@ func rewriteQuery(prompt string, history []llama.ChatMessage) string {
 	if len(history) == 0 {
 		return base
 	}
+
 	var parts []string
 	parts = append(parts, base)
+
+	// Pull in a small amount of recent context to rewrite ambiguous follow-ups.
 	for i := len(history) - 1; i >= 0 && len(parts) < 4; i-- {
 		msg := strings.TrimSpace(history[i].Content)
 		if msg == "" {
@@ -187,5 +150,6 @@ func rewriteQuery(prompt string, history []llama.ChatMessage) string {
 		}
 		parts = append(parts, msg)
 	}
+
 	return strings.Join(parts, " | ")
 }

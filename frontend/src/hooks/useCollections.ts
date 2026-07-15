@@ -10,6 +10,11 @@ export interface Collection {
 	id: number;
 	name: string;
 	docCount: number;
+	embeddingModel?: string;
+	embeddingDims?: number;
+	vectorBackend?: string;
+	createdAt?: number;
+	updatedAt?: number;
 }
 
 export interface IngestedDocument {
@@ -40,6 +45,11 @@ export function useCollections() {
 					id: c.id,
 					name: c.name,
 					docCount: c.docCount || 0,
+					embeddingModel: c.embeddingModel ?? c.EmbeddingModel ?? "",
+					embeddingDims: c.embeddingDims ?? c.EmbeddingDims ?? 0,
+					vectorBackend: c.vectorBackend ?? c.VectorBackend ?? "sqlite-vec",
+					createdAt: c.createdAt ?? c.CreatedAt ?? 0,
+					updatedAt: c.updatedAt ?? c.UpdatedAt ?? 0,
 				}));
 				setCollections(mapped);
 				setActiveCollectionId(mapped[0].id);
@@ -53,7 +63,7 @@ export function useCollections() {
 		if (!name.trim()) return;
 		try {
 			const newId = await CreateCollection(name);
-			const newCol: Collection = { id: newId, name, docCount: 0 };
+			const newCol: Collection = { id: newId, name, docCount: 0, embeddingModel: "", embeddingDims: 0, vectorBackend: "sqlite-vec" };
 			setCollections((prev) => [...prev, newCol]);
 			setActiveCollectionId(newId);
 			return newId;

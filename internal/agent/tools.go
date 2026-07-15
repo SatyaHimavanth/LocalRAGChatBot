@@ -22,10 +22,5 @@ func DefaultTools() []ToolSpec {
 			Description: "Use the conversation history to resolve follow-up questions and references to earlier turns.",
 			Usage:       "Use for pronouns, short follow-ups, and questions that refer to 'that', 'it', or earlier context.",
 		},
-		{
-			Name:        "workspace_memory",
-			Description: "Review workspace memory such as recent uploads, active collection context, and prior app activity.",
-			Usage:       "Use for questions about current work, prior uploads, or earlier app state that is not in the current turn history.",
-		},
 	}
 }

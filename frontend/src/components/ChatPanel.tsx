@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { ReactNode, MouseEvent, CSSProperties } from "react";
-import { Message, ThemeVars, Theme, SourceRef, EvidenceEffort, RetrievalScope } from "../types";
+import { Message, ThemeVars, Theme, SourceRef } from "../types";
 import { I } from "./Icons";
 import { Markdown } from "./Markdown";
 import { Modal } from "./Modal";
@@ -18,13 +18,6 @@ interface ChatPanelProps {
   onSend: () => void;
   onThemeToggle: () => void;
   onOpenUploadModal: () => void;
-  onOpenBranches?: () => void;
-  onOpenWorkspace?: () => void;
-  onOpenDiagnostics?: () => void;
-  evidenceEffort: EvidenceEffort;
-  onEvidenceEffortChange: (v: EvidenceEffort) => void;
-  retrievalScope: RetrievalScope;
-  onRetrievalScopeChange: (v: RetrievalScope) => void;
   onStopGeneration?: () => void;
   onRerunFromMessage?: (messageId: number, prompt: string) => void;
 }
@@ -42,13 +35,6 @@ export function ChatPanel({
   onSend,
   onThemeToggle,
   onOpenUploadModal,
-  onOpenBranches,
-  onOpenWorkspace,
-  onOpenDiagnostics,
-  evidenceEffort,
-  onEvidenceEffortChange,
-  retrievalScope,
-  onRetrievalScopeChange,
   onStopGeneration,
   onRerunFromMessage,
 }: ChatPanelProps) {
@@ -122,11 +108,6 @@ export function ChatPanel({
     }
   }, []);
 
-  const copyWithCitations = useCallback(async (msgId: number, text: string, sources?: SourceRef[]) => {
-    const citationText = formatCitationExport(text, sources || []);
-    await copyToClipboard(msgId, citationText);
-  }, [copyToClipboard]);
-
   const openEditModal = useCallback((messageId: number, currentText: string) => {
     setEditModal({ open: true, messageId, value: currentText });
   }, []);
@@ -158,13 +139,6 @@ export function ChatPanel({
         </span>
       );
     }
-    if ((meta as any)?.usedWorkspaceMemory) {
-      badges.push(
-        <span key="workspace" style={flagStyle("rgba(14,165,233,0.14)", "rgba(14,165,233,0.95)", T.border)}>
-          Workspace
-        </span>
-      );
-    }
     if (meta?.usedDirect) {
       badges.push(
         <span key="direct" style={flagStyle("rgba(34,197,94,0.12)", "rgba(34,197,94,0.9)", T.border)}>
@@ -179,21 +153,24 @@ export function ChatPanel({
         </span>
       );
     }
-    if (meta?.evidenceEffort) {
-      const effortLabel = meta.evidenceEffort === "high" ? "High" : meta.evidenceEffort === "low" ? "Low" : "Medium";
+    if ((meta?.evidenceCount || 0) > 0) {
       badges.push(
-        <span key="effort" style={flagStyle("rgba(245,158,11,0.14)", "rgba(245,158,11,0.95)", T.border)}>
-          {effortLabel} evidence
+        <span key="evidence" style={flagStyle("rgba(59,130,246,0.12)", "rgba(59,130,246,0.9)", T.border)}>
+          Evidence {meta?.evidenceCount}
         </span>
       );
     }
-    if (typeof meta?.verificationScore === "number") {
-      const pct = Math.round((meta.verificationScore || 0) * 100);
-      const color = pct >= 82 ? "rgba(34,197,94,0.95)" : pct >= 65 ? "rgba(245,158,11,0.95)" : "rgba(239,68,68,0.9)";
-      const bg = pct >= 82 ? "rgba(34,197,94,0.12)" : pct >= 65 ? "rgba(245,158,11,0.12)" : "rgba(239,68,68,0.12)";
+    if (typeof meta?.confidence === "number" && meta.confidence > 0) {
       badges.push(
-        <span key="verification" style={flagStyle(bg, color, T.border)} title={meta.verificationSummary || undefined}>
-          {meta.verificationVerdict ? meta.verificationVerdict[0].toUpperCase() + meta.verificationVerdict.slice(1) : "Verified"} {pct}%
+        <span key="confidence" style={flagStyle("rgba(16,185,129,0.12)", "rgba(16,185,129,0.9)", T.border)}>
+          Confidence {Math.round(meta.confidence * 100)}%
+        </span>
+      );
+    }
+    if (((meta?.evidenceCount || 0) > 0 || (meta?.confidence || 0) > 0) && typeof meta?.verified === "boolean") {
+      badges.push(
+        <span key="verified" style={flagStyle(meta.verified ? "rgba(34,197,94,0.12)" : "rgba(245,158,11,0.14)", meta.verified ? "rgba(34,197,94,0.95)" : "rgba(245,158,11,0.95)", T.border)}>
+          {meta.verified ? "Verified" : "Review"}
         </span>
       );
     }
@@ -229,26 +206,9 @@ export function ChatPanel({
           </div>
           <div style={{ fontSize: 11, color: T.text3, marginTop: 2 }}>Collection: {collSelector}</div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {onOpenWorkspace && (
-            <button onClick={onOpenWorkspace} style={{ background: "none", border: "1px solid " + T.border, cursor: "pointer", color: T.text2, padding: "6px 10px", borderRadius: 999, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }} title="Open workspace memory">
-              Workspace
-            </button>
-          )}
-          {onOpenBranches && (
-            <button onClick={onOpenBranches} style={{ background: "none", border: "1px solid " + T.border, cursor: "pointer", color: T.text2, padding: "6px 10px", borderRadius: 999, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }} title="Explore conversation branches">
-              Branches
-            </button>
-          )}
-          {onOpenDiagnostics && (
-            <button onClick={onOpenDiagnostics} style={{ background: "none", border: "1px solid " + T.border, cursor: "pointer", color: T.text2, padding: "6px 10px", borderRadius: 999, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }} title="Open diagnostics dashboard">
-              Diagnostics
-            </button>
-          )}
-          <button onClick={onThemeToggle} style={{ background: "none", border: "none", cursor: "pointer", color: T.text3, padding: 6 }} title="Toggle theme">
-            {theme === "dark" ? <I.Sun /> : <I.Moon />}
-          </button>
-        </div>
+        <button onClick={onThemeToggle} style={{ background: "none", border: "none", cursor: "pointer", color: T.text3, padding: 6 }} title="Toggle theme">
+          {theme === "dark" ? <I.Sun /> : <I.Moon />}
+        </button>
       </div>
 
       <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", position: "relative" }}>
@@ -283,53 +243,6 @@ export function ChatPanel({
                     <Markdown text={processed} hasPreformattedHtml={hasSources} />
                   </div>
 
-                  {m.sender === "ai" && hasSources && (
-                    <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6, maxWidth: "80%" }}>
-                      {msgSources.slice(0, 4).map((src) => (
-                        <button
-                          key={`${numericMsgId}-${src.refNumber}`}
-                          onClick={() => setSourceModal({ sources: msgSources, refNum: src.refNumber })}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            border: "1px solid " + T.border,
-                            background: T.inputBg,
-                            color: T.text2,
-                            fontSize: 11,
-                            cursor: "pointer",
-                            maxWidth: "100%",
-                          }}
-                          title={`${src.filename} • ${src.collectionName}`}
-                        >
-                          <span style={{ fontWeight: 600, color: "rgba(99,102,241,0.95)" }}>[{src.refNumber}]</span>
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{src.filename}</span>
-                        </button>
-                      ))}
-                      {msgSources.length > 4 && (
-                        <button
-                          onClick={() => setSourceModal({ sources: msgSources, refNum: msgSources[0].refNumber })}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            border: "1px solid " + T.border,
-                            background: T.inputBg,
-                            color: T.text3,
-                            fontSize: 11,
-                            cursor: "pointer",
-                          }}
-                          title="Open full source list"
-                        >
-                          +{msgSources.length - 4} more
-                        </button>
-                      )}
-                    </div>
-                  )}
-
                   {m.sender === "user" && canEdit && canRerun && (
                     <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                       <button onClick={() => openEditModal(numericMsgId, m.text)} style={messageActionBtnStyle(T)} title="Edit and rerun">
@@ -346,18 +259,28 @@ export function ChatPanel({
                   {m.sender === "ai" && (
                     <>
                       {renderFlags(m)}
+                      {hasSources && (
+                        <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                          <span style={{ ...flagStyle("rgba(148,163,184,0.12)", T.text2, T.border), fontWeight: 600 }}>Citations</span>
+                          {Array.from(new Map(msgSources.map((s) => [s.refNumber, s])).values()).map((src) => (
+                            <button
+                              key={src.refNumber}
+                              onClick={() => setSourceModal({ sources: msgSources, refNum: src.refNumber })}
+                              style={messageActionBtnStyle(T)}
+                              title={`Open citation [${src.refNumber}]`}
+                            >
+                              <span>[{src.refNumber}]</span>
+                              <span>{src.filename}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       {canCopy && (
                         <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                           <button onClick={() => copyToClipboard(numericMsgId, m.text)} style={messageActionBtnStyle(T)} title="Copy response">
                             <I.Copy />
                             <span>{copiedMessageId === numericMsgId ? "Copied" : "Copy"}</span>
                           </button>
-                          {hasSources && (
-                            <button onClick={() => copyWithCitations(numericMsgId, m.text, msgSources)} style={messageActionBtnStyle(T)} title="Copy response with source references">
-                              <I.Copy />
-                              <span>Copy w/ sources</span>
-                            </button>
-                          )}
                         </div>
                       )}
                     </>
@@ -427,28 +350,9 @@ export function ChatPanel({
       )}
 
       <div style={{ padding: "12px 16px", borderTop: "1px solid " + T.border }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button onClick={onOpenUploadModal} style={{ background: "none", border: "none", cursor: "pointer", color: T.text3, padding: "6px", display: "flex", flexShrink: 0 }} title="Upload documents"><I.Paperclip /></button>
-          <select
-            value={evidenceEffort}
-            onChange={(e) => onEvidenceEffortChange(e.target.value as EvidenceEffort)}
-            style={{ padding: "9px 12px", borderRadius: 8, border: "1px solid " + T.border, background: T.inputBg, color: T.text, fontSize: 12, outline: "none", minWidth: 120 }}
-            title="Evidence gathering effort"
-          >
-            <option value="low">Low evidence</option>
-            <option value="medium">Medium evidence</option>
-            <option value="high">High evidence</option>
-          </select>
-          <select
-            value={retrievalScope}
-            onChange={(e) => onRetrievalScopeChange(e.target.value as RetrievalScope)}
-            style={{ padding: "9px 12px", borderRadius: 8, border: "1px solid " + T.border, background: T.inputBg, color: T.text, fontSize: 12, outline: "none", minWidth: 150 }}
-            title="Retrieval scope"
-          >
-            <option value="current">Current collection</option>
-            <option value="all">All collections</option>
-          </select>
-          <input value={input} onChange={(e) => onInputChange(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && onSend()} placeholder={isArchived ? "Archived..." : "Ask a question..."} style={{ flex: 1, minWidth: 180, padding: "10px 14px", borderRadius: 8, border: "1px solid " + T.border, background: T.inputBg, color: T.text, fontSize: 13, outline: "none", opacity: isArchived ? 0.4 : 1, transition: "background 0.3s" }} disabled={isArchived} />
+          <input value={input} onChange={(e) => onInputChange(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && onSend()} placeholder={isArchived ? "Archived..." : "Ask a question..."} style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid " + T.border, background: T.inputBg, color: T.text, fontSize: 13, outline: "none", opacity: isArchived ? 0.4 : 1, transition: "background 0.3s" }} disabled={isArchived} />
           <button onClick={onSend} disabled={gen || isArchived} style={{ padding: "8px 14px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500, color: "#fff", background: "rgba(99,102,241,0.8)", opacity: (gen || isArchived) ? 0.5 : 1, display: "flex", alignItems: "center", justifyContent: "center", minWidth: 36 }}>{gen ? <I.Spinner /> : <I.Send />}</button>
           {gen && onStopGeneration && (
             <button onClick={onStopGeneration} style={{ padding: "8px 14px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500, color: "#fff", background: "rgba(239,68,68,0.8)", display: "flex", alignItems: "center", justifyContent: "center", gap: 4, minWidth: 36 }} title="Stop generation">
@@ -493,16 +397,6 @@ function insertSourceBadges(text: string, sources: SourceRef[]): string {
     const src = sources.find((s) => s.refNumber === refNum);
     return `<sup><span data-ref="${refNum}" style="cursor:pointer;color:rgba(99,102,241,0.9);font-weight:600;font-size:11px;background:rgba(99,102,241,0.12);padding:1px 5px;border-radius:3px;margin:0 1px;display:inline-block" title="${src ? `Source: ${src.filename}` : `Reference ${refNum}`}">[${refNum}]</span></sup>`;
   });
-}
-
-function formatCitationExport(text: string, sources: SourceRef[]): string {
-  const body = text.trim();
-  if (!sources || sources.length === 0) return body;
-  const lines = sources
-    .slice()
-    .sort((a, b) => a.refNumber - b.refNumber)
-    .map((s) => `[${s.refNumber}] ${s.filename} — ${s.collectionName}`);
-  return `${body}\n\nSources:\n${lines.join("\n")}`;
 }
 
 function flagStyle(bg: string, color: string, border: string): CSSProperties {

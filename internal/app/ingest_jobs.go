@@ -68,6 +68,27 @@ type ingestRuntime struct {
 	wg     sync.WaitGroup
 }
 
+func toStoreIngestMetadata(meta ingest.DocumentMetadata) store.DocumentIngestMetadata {
+	return store.DocumentIngestMetadata{
+		SourceType:      meta.Loader,
+		SourceSizeBytes: meta.SizeBytes,
+		WordCount:       meta.WordCount,
+		LineCount:       meta.LineCount,
+		CharacterCount:  meta.CharacterCount,
+		ParagraphCount:  meta.ParagraphCount,
+		Title:           meta.Title,
+		Summary:         meta.Summary,
+	}
+}
+
+func (s *ChatService) recordIngestLog(jobID, docID, collectionID int64, batchID, level, stage, message string, start time.Time, throughput float64) {
+	if s.DB == nil || jobID == 0 {
+		return
+	}
+	duration := time.Since(start)
+	_ = store.AddIngestionLog(s.DB, jobID, docID, collectionID, batchID, level, stage, message, duration.Milliseconds(), 0, throughput)
+}
+
 func (s *ChatService) ensureIngestRuntime() *ingestRuntime {
 	s.ingestOnce.Do(func() {
 		s.ingestRT = &ingestRuntime{}
@@ -98,6 +119,7 @@ func (s *ChatService) CancelIngest() {
 	rt.mu.Unlock()
 	if cancel != nil {
 		cancel()
+		s.recordEvent("ingest:cancel", "Ingest cancelled", "Active ingest worker cancellation requested", "warn", "ingest", 0, 0, 0, "")
 	}
 }
 
@@ -116,6 +138,46 @@ func (s *ChatService) WaitIngestIdle(timeoutMs int) {
 	case <-done:
 	case <-time.After(time.Duration(timeoutMs) * time.Millisecond):
 	}
+}
+
+// PauseIngest requests a graceful pause of the active ingest worker.
+func (s *ChatService) PauseIngest() error {
+	rt := s.ensureIngestRuntime()
+	rt.mu.Lock()
+	cancel := rt.cancel
+	rt.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return nil
+}
+
+// GetIngestionQueue returns persisted queue jobs for a collection.
+func (s *ChatService) GetIngestionQueue(collectionID int64) ([]store.IngestionJob, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	return store.GetIngestionJobs(s.DB, collectionID)
+}
+
+// GetIngestionLogs returns the job logs for a particular ingestion job.
+func (s *ChatService) GetIngestionLogs(jobID int64, limit int) ([]store.IngestionLog, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	return store.GetIngestionLogs(s.DB, jobID, limit)
+}
+
+// RetryFailedIngest marks a job as retrying so the UI can trigger a resume.
+func (s *ChatService) RetryFailedIngest(jobID int64) error {
+	if s.DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if err := store.RetryIngestionJob(s.DB, jobID); err != nil {
+		return err
+	}
+	s.recordEvent("ingest:retry", "Retry queued", fmt.Sprintf("Job %d marked retrying", jobID), "info", "ingest", 0, 0, 0, "")
+	return nil
 }
 
 // CleanupIncompleteOnStartup removes staging rows and resets interrupted embedding jobs.
@@ -179,7 +241,11 @@ func (s *ChatService) DiscardIngestJob(docID int64) error {
 	if doc.Status == store.DocStatusReady {
 		return fmt.Errorf("cannot discard a ready document; delete it instead")
 	}
-	return store.DeleteDocument(s.DB, docID)
+	if err := store.DeleteDocument(s.DB, docID); err != nil {
+		return err
+	}
+	s.recordEvent("ingest:discard_one", "Incomplete job discarded", fmt.Sprintf("Document %d removed from queue", docID), "warn", "ingest", 0, 0, docID, "")
+	return nil
 }
 
 // DiscardAllIncomplete deletes all non-ready documents.
@@ -187,11 +253,34 @@ func (s *ChatService) DiscardAllIncomplete() (int64, error) {
 	if s.DB == nil {
 		return 0, fmt.Errorf("database not initialized")
 	}
-	return store.DiscardIncompleteDocuments(s.DB)
+	count, err := store.DiscardIncompleteDocuments(s.DB)
+	if err != nil {
+		return 0, err
+	}
+	s.recordEvent("ingest:discard_all", "Incomplete jobs discarded", fmt.Sprintf("%d incomplete document(s) removed", count), "warn", "ingest", 0, 0, 0, "")
+	return count, nil
+}
+
+// FindDuplicateDocuments performs duplicate classification for a document before staging.
+func (s *ChatService) FindDuplicateDocuments(collectionID int64, filename, content string) ([]store.DuplicateMatch, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, nil
+	}
+	chunks := ingest.SplitText(content, chunkSize, chunkOverlap)
+	chunkHashes := make([]string, 0, len(chunks))
+	for _, c := range chunks {
+		chunkHashes = append(chunkHashes, ingest.HashChunkContent(c.Content))
+	}
+	return store.FindPotentialDuplicates(s.DB, collectionID, filename, ingest.HashNormalizedText(content), chunkHashes, 10)
 }
 
 // ResumeIngest continues embedding for all resumable incomplete documents.
 func (s *ChatService) ResumeIngest() (*IngestBatchResult, error) {
+	s.recordEvent("ingest:resume_request", "Ingest resume requested", "Queued documents will be resumed", "info", "ingest", 0, 0, 0, "resume")
 	return s.processQueue("")
 }
 
@@ -227,6 +316,12 @@ func (s *ChatService) StartIngestBatch(collectionID int64, files []IngestFilePay
 
 	batchID := s.NewBatchID()
 	result := &IngestBatchResult{BatchID: batchID, Items: make([]StageResult, 0, len(files))}
+	var jobID int64
+	if id, err := store.CreateIngestionJob(s.DB, batchID, collectionID, len(files)); err == nil {
+		jobID = id
+		_ = store.UpdateIngestionJob(s.DB, jobID, "running", "staging", 0, 0, 0, "starting ingest batch")
+		s.recordEvent("ingest:batch_start", "Ingest batch started", fmt.Sprintf("%d item(s) staged for collection %d", len(files), collectionID), "info", "ingest", collectionID, 0, 0, batchID)
+	}
 
 	// ── Phase A: stage all files ──────────────────────────────────────────
 	total := len(files)
@@ -237,8 +332,10 @@ func (s *ChatService) StartIngestBatch(collectionID int64, files []IngestFilePay
 				"phase": "cancelled", "step": "cancelled", "label": "Ingest cancelled",
 				"pct": 0, "batchId": batchID,
 			})
+			s.recordEvent("ingest:batch_cancelled", "Ingest cancelled", "Batch cancelled during staging", "warn", "ingest", collectionID, 0, 0, batchID)
 			return result, nil
 		}
+		stageStart := time.Now()
 		s.emit("ingest:progress", map[string]any{
 			"phase": "staging", "step": "staging",
 			"label":    fmt.Sprintf("Extracting text %d/%d...", i+1, total),
@@ -250,7 +347,8 @@ func (s *ChatService) StartIngestBatch(collectionID int64, files []IngestFilePay
 			"total":    total,
 		})
 
-		item := s.stageOne(f, collectionID, batchID)
+		item := s.stageOne(f, collectionID, batchID, jobID)
+		s.recordIngestLog(jobID, item.DocID, collectionID, batchID, "info", "staging", item.Message, stageStart, 0)
 		result.Items = append(result.Items, item)
 		if item.Status == "staged" || item.Status == "replaced" {
 			result.Staged++
@@ -264,17 +362,23 @@ func (s *ChatService) StartIngestBatch(collectionID int64, files []IngestFilePay
 		"batchId": batchID,
 		"staged":  result.Staged,
 	})
+	s.recordEvent("ingest:staged", "Documents staged", fmt.Sprintf("%d document(s) staged", result.Staged), "info", "ingest", collectionID, 0, 0, batchID)
+	if jobID > 0 {
+		_ = store.UpdateIngestionJob(s.DB, jobID, "running", "embedding", 50, result.Staged, 0, "staging complete")
+		_ = store.AddIngestionLog(s.DB, jobID, 0, collectionID, batchID, "info", "staging", fmt.Sprintf("staged %d document(s)", result.Staged), 0, 0, 0)
+	}
 
 	if result.Staged == 0 {
 		s.emit("ingest:progress", map[string]any{
 			"phase": "batch_done", "step": "complete",
 			"label": "Nothing to embed", "pct": 100, "batchId": batchID,
 		})
+		s.recordEvent("ingest:batch_empty", "Nothing to embed", "Stage phase completed without any staged documents", "info", "ingest", collectionID, 0, 0, batchID)
 		return result, nil
 	}
 
 	// ── Phase B: embed all queued docs in this batch ──────────────────────
-	completed, failed, cancelled := s.embedResumable(ctx, batchID)
+	completed, failed, cancelled := s.embedResumable(ctx, batchID, jobID)
 	result.Completed = completed
 	result.Failed = failed
 	result.Cancelled = cancelled
@@ -288,6 +392,16 @@ func (s *ChatService) StartIngestBatch(collectionID int64, files []IngestFilePay
 		"label": label, "pct": 100, "batchId": batchID,
 		"completed": completed, "failed": failed, "cancelled": cancelled,
 	})
+	if jobID > 0 {
+		status := "completed"
+		if cancelled {
+			status = "paused"
+		} else if failed > 0 {
+			status = "failed"
+		}
+		_ = store.UpdateIngestionJob(s.DB, jobID, status, "completed", 100, completed, failed, label)
+	}
+	s.recordEvent("ingest:batch_complete", "Ingest batch complete", fmt.Sprintf("%d ready, %d failed", completed, failed), "info", "ingest", collectionID, 0, 0, batchID)
 	return result, nil
 }
 
@@ -321,13 +435,18 @@ func (s *ChatService) processQueue(batchID string) (*IngestBatchResult, error) {
 	if batchID == "" {
 		batchID = "resume"
 	}
-	completed, failed, cancelled := s.embedResumable(ctx, batchID)
+	var jobID int64
+	if job, err := store.GetIngestionJobByBatchID(s.DB, batchID); err == nil && job != nil {
+		jobID = job.ID
+	}
+	completed, failed, cancelled := s.embedResumable(ctx, batchID, jobID)
 	result := &IngestBatchResult{
 		BatchID:   batchID,
 		Completed: completed,
 		Failed:    failed,
 		Cancelled: cancelled,
 	}
+	s.recordEvent("ingest:batch_complete", "Resume complete", fmt.Sprintf("%d ready, %d failed", completed, failed), "info", "ingest", 0, 0, 0, batchID)
 	s.emit("ingest:progress", map[string]any{
 		"phase": "batch_done", "step": "complete",
 		"label":     fmt.Sprintf("Resume complete: %d ready, %d failed", completed, failed),
@@ -340,33 +459,55 @@ func (s *ChatService) processQueue(batchID string) (*IngestBatchResult, error) {
 	return result, nil
 }
 
-func (s *ChatService) stageOne(f IngestFilePayload, collectionID int64, batchID string) StageResult {
+func (s *ChatService) stageOne(f IngestFilePayload, collectionID int64, batchID string, jobID int64) StageResult {
 	filename := strings.TrimSpace(f.Filename)
 	if filename == "" {
 		filename = "document.txt"
 	}
 
-	text, err := s.extractText(f)
+	loaded, err := s.extractDocument(f, filename)
 	if err != nil {
 		return StageResult{Filename: filename, Status: "error", Message: err.Error()}
 	}
-	text = strings.TrimSpace(text)
+	text := strings.TrimSpace(loaded.Text)
 	if text == "" {
 		return StageResult{Filename: filename, Status: "error", Message: "No extractable text found"}
 	}
 
-	profile := ingest.BuildDocumentProfile(filename, text)
-	text = profile.NormalizedText
-	hash := profile.ContentHash
-	chunks, _ := ingest.BuildChunkSpecs(filename, text, chunkSize, chunkOverlap)
-	if len(chunks) == 0 {
+	meta := toStoreIngestMetadata(loaded.Metadata)
+	if meta.Title == "" {
+		meta.Title = filename
+	}
+	hash := ingest.HashNormalizedText(text)
+	plan := ingest.BuildChunkPlan(text, meta.Title, chunkSize, chunkOverlap)
+	if len(plan) == 0 {
 		return StageResult{Filename: filename, Status: "error", Message: "No content to ingest"}
 	}
-	expected := len(chunks)
+	expected := len(plan)
+	chunkHashes := make([]string, 0, len(plan))
+	for _, c := range plan {
+		if c.Role == "summary" {
+			continue
+		}
+		chunkHashes = append(chunkHashes, ingest.HashChunkContent(c.Content))
+	}
+	if matches, err := store.FindPotentialDuplicates(s.DB, collectionID, filename, hash, chunkHashes, 5); err == nil && len(matches) > 0 && !f.Replace {
+		best := matches[0]
+		return StageResult{
+			Filename: filename,
+			Status:   "duplicate",
+			Message:  fmt.Sprintf("Possible %s duplicate of %s (%s)", best.Kind, best.Filename, best.Reason),
+			DocID:    best.DocumentID,
+		}
+	}
 
 	existing, err := store.GetDocumentByHash(s.DB, hash, collectionID)
 	if err != nil {
 		return StageResult{Filename: filename, Status: "error", Message: "Database error checking duplicates"}
+	}
+	globalExisting, _ := store.GetDocumentByHashAny(s.DB, hash)
+	if globalExisting != nil && globalExisting.CollectionID != collectionID && !f.Replace {
+		return StageResult{Filename: filename, Status: "duplicate", Message: fmt.Sprintf("Already exists in another collection: %s", globalExisting.Filename), DocID: globalExisting.ID}
 	}
 	if existing != nil {
 		if existing.Status == store.DocStatusReady && !f.Replace {
@@ -378,15 +519,12 @@ func (s *ChatService) stageOne(f IngestFilePayload, collectionID int64, batchID 
 				DocID:    existing.ID,
 			}
 		}
-		// Replace or re-queue incomplete same-hash doc
-		if err := store.DeleteDocumentChunks(s.DB, existing.ID); err != nil {
-			return StageResult{Filename: filename, Status: "error", Message: "Failed to clear old chunks: " + err.Error()}
-		}
+		// Replace or re-queue incomplete same-hash doc without wiping preserved chunks.
 		if err := store.UpdateDocumentContent(s.DB, existing.ID, text, hash); err != nil {
 			return StageResult{Filename: filename, Status: "error", Message: "Failed to update document content"}
 		}
-		if err := store.UpdateDocumentSummary(s.DB, existing.ID, profile.Summary); err != nil {
-			return StageResult{Filename: filename, Status: "error", Message: "Failed to update document summary"}
+		if err := store.UpdateDocumentMetadata(s.DB, existing.ID, meta); err != nil {
+			return StageResult{Filename: filename, Status: "error", Message: "Failed to update document metadata"}
 		}
 		if err := store.UpdateDocumentIngest(s.DB, existing.ID, store.DocStatusQueued, expected, batchID, ""); err != nil {
 			return StageResult{Filename: filename, Status: "error", Message: "Failed to queue document"}
@@ -398,36 +536,32 @@ func (s *ChatService) stageOne(f IngestFilePayload, collectionID int64, batchID 
 		return StageResult{Filename: filename, Status: status, Message: "Queued for embedding", DocID: existing.ID}
 	}
 
-	docID, err := store.AddDocumentWithStatus(s.DB, collectionID, filename, hash, text, store.DocStatusQueued, batchID, expected)
+	docID, err := store.AddDocumentWithMetadata(s.DB, collectionID, filename, hash, text, store.DocStatusQueued, batchID, expected, meta)
 	if err != nil {
 		return StageResult{Filename: filename, Status: "error", Message: fmt.Sprintf("Registering document: %v", err)}
-	}
-	if err := store.UpdateDocumentSummary(s.DB, docID, profile.Summary); err != nil {
-		return StageResult{Filename: filename, Status: "error", Message: "Failed to save document summary"}
 	}
 	return StageResult{Filename: filename, Status: "staged", Message: "Queued for embedding", DocID: docID}
 }
 
-func (s *ChatService) extractText(f IngestFilePayload) (string, error) {
+func (s *ChatService) extractDocument(f IngestFilePayload, filename string) (ingest.LoadedDocument, error) {
 	if strings.TrimSpace(f.TextContent) != "" {
-		return f.TextContent, nil
+		return ingest.LoadDocumentBytes([]byte(f.TextContent), filename)
 	}
 	if strings.TrimSpace(f.Base64Data) == "" {
-		return "", fmt.Errorf("no file data or text content provided")
+		return ingest.LoadedDocument{}, fmt.Errorf("no file data or text content provided")
 	}
 	data, err := base64.StdEncoding.DecodeString(f.Base64Data)
 	if err != nil {
-		// try raw URL-safe / without padding variants
 		data, err = base64.RawStdEncoding.DecodeString(f.Base64Data)
 		if err != nil {
-			return "", fmt.Errorf("failed to decode file data")
+			return ingest.LoadedDocument{}, fmt.Errorf("failed to decode file data")
 		}
 	}
-	return ingest.ParseFileBytes(data, f.Filename)
+	return ingest.LoadDocumentBytes(data, filename)
 }
 
 // embedResumable embeds all resumable documents. batchID "" or "resume" = all.
-func (s *ChatService) embedResumable(ctx context.Context, batchID string) (completed, failed int, cancelled bool) {
+func (s *ChatService) embedResumable(ctx context.Context, batchID string, jobID int64) (completed, failed int, cancelled bool) {
 	filter := batchID
 	if batchID == "resume" {
 		filter = ""
@@ -444,7 +578,7 @@ func (s *ChatService) embedResumable(ctx context.Context, batchID string) (compl
 			return completed, failed, true
 		}
 
-		if err := s.embedOneDocument(ctx, &docs[di], di+1, len(docs)); err != nil {
+		if err := s.embedOneDocument(ctx, &docs[di], di+1, len(docs), jobID); err != nil {
 			if ctx.Err() != nil {
 				_ = store.UpdateDocumentStatus(s.DB, doc.ID, store.DocStatusQueued, "Interrupted — resume to continue")
 				return completed, failed, true
@@ -464,14 +598,15 @@ func (s *ChatService) embedResumable(ctx context.Context, batchID string) (compl
 			"label": fmt.Sprintf("Ready: %s", doc.Filename),
 			"docId": doc.ID, "filename": doc.Filename, "pct": 100,
 		})
+		s.recordEvent("ingest:doc_ready", "Document ready", fmt.Sprintf("%s ready with %d chunks", doc.Filename, doc.ExpectedChunks), "info", "ingest", doc.CollectionID, 0, doc.ID, doc.BatchID)
 	}
 	return completed, failed, false
 }
 
-func (s *ChatService) embedOneDocument(ctx context.Context, doc *store.Document, docIndex, docTotal int) error {
+func (s *ChatService) embedOneDocument(ctx context.Context, doc *store.Document, docIndex, docTotal int, jobID int64) error {
 	_ = store.UpdateDocumentStatus(s.DB, doc.ID, store.DocStatusEmbedding, "")
 
-	chunks, profile := ingest.BuildChunkSpecs(doc.Filename, doc.Content, chunkSize, chunkOverlap)
+	chunks := ingest.BuildChunkPlan(doc.Content, doc.Title, chunkSize, chunkOverlap)
 	total := len(chunks)
 	if total == 0 {
 		return fmt.Errorf("no content to embed")
@@ -480,8 +615,8 @@ func (s *ChatService) embedOneDocument(ctx context.Context, doc *store.Document,
 		_ = store.UpdateDocumentIngest(s.DB, doc.ID, store.DocStatusEmbedding, total, doc.BatchID, "")
 		doc.ExpectedChunks = total
 	}
-	_ = store.UpdateDocumentSummary(s.DB, doc.ID, profile.Summary)
 
+	docStart := time.Now()
 	s.emit("ingest:progress", map[string]any{
 		"phase": "embedding", "step": "chunked",
 		"label":    fmt.Sprintf("Embedding %s (%d/%d docs)", doc.Filename, docIndex, docTotal),
@@ -493,40 +628,47 @@ func (s *ChatService) embedOneDocument(ctx context.Context, doc *store.Document,
 		"docTotal": docTotal,
 	})
 
+	existingChunks, _ := store.GetChunksByDocument(s.DB, doc.ID)
+	existingByOrd := make(map[int]store.ChunkRecord, len(existingChunks))
+	for _, c := range existingChunks {
+		existingByOrd[c.Ord] = c
+	}
+
 	for i, chunk := range chunks {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		exists, err := store.HasChunkOrd(s.DB, doc.ID, chunk.Ord)
-		if err != nil {
-			return err
-		}
-		if exists {
-			pct := ((i + 1) * 100) / total
-			s.emit("ingest:progress", map[string]any{
-				"phase": "embedding", "step": "embedding",
-				"label":    fmt.Sprintf("Embedding %s — chunk %d/%d", doc.Filename, i+1, total),
-				"pct":      pct,
-				"detail":   fmt.Sprintf("%d/%d", i+1, total),
-				"docId":    doc.ID,
-				"filename": doc.Filename,
-			})
-			continue
+		chunkHash := ingest.HashChunkContent(chunk.Content)
+		isSummary := chunk.Role == "summary"
+		if existing, ok := existingByOrd[chunk.Ord]; ok {
+			if existing.ChunkHash == chunkHash {
+				if isSummary || existing.EmbeddingHash != "" {
+					pct := ((i + 1) * 100) / total
+					s.emit("ingest:progress", map[string]any{
+						"phase": "embedding", "step": "embedding",
+						"label":    fmt.Sprintf("Embedding %s — chunk %d/%d", doc.Filename, i+1, total),
+						"pct":      pct,
+						"detail":   fmt.Sprintf("%d/%d", i+1, total),
+						"docId":    doc.ID,
+						"filename": doc.Filename,
+					})
+					continue
+				}
+			}
+			if err := store.DeleteChunk(s.DB, existing.ID); err != nil {
+				return fmt.Errorf("deleting stale chunk %d: %w", i+1, err)
+			}
 		}
 
-		embedding, err := s.Engine.Embed(chunk.Content)
-		if err != nil {
-			return fmt.Errorf("embedding chunk %d: %w", i+1, err)
+		var embedding []float32
+		if !isSummary {
+			var err error
+			embedding, err = s.Engine.Embed(chunk.Content)
+			if err != nil {
+				return fmt.Errorf("embedding chunk %d: %w", i+1, err)
+			}
 		}
-		if _, err := store.InsertChunkWithMetadata(s.DB, doc.ID, doc.CollectionID, chunk.Content, chunk.Ord, store.ChunkMetadata{
-			Title:        chunk.Title,
-			SectionPath:  chunk.SectionPath,
-			HeadingLevel: chunk.HeadingLevel,
-			Summary:      chunk.Summary,
-			ContentHash:  chunk.ContentHash,
-			TokenCount:   chunk.TokenCount,
-			CharCount:    chunk.CharCount,
-		}, embedding); err != nil {
+		if _, err := store.InsertChunkWithHierarchy(s.DB, doc.ID, doc.CollectionID, chunk.Content, chunk.Ord, chunk.Level, chunk.Role, chunk.ParentOrd, chunk.PrevOrd, chunk.NextOrd, chunk.Summary, chunk.HeadingPath, chunkHash, embedding); err != nil {
 			return fmt.Errorf("inserting chunk %d: %w", i+1, err)
 		}
 
@@ -538,7 +680,14 @@ func (s *ChatService) embedOneDocument(ctx context.Context, doc *store.Document,
 			"detail":   fmt.Sprintf("%d/%d", i+1, total),
 			"docId":    doc.ID,
 			"filename": doc.Filename,
+			"role":     chunk.Role,
 		})
+	}
+
+	if len(existingChunks) > total {
+		for _, stale := range existingChunks[total:] {
+			_ = store.DeleteChunk(s.DB, stale.ID)
+		}
 	}
 
 	// Verify completeness
@@ -547,10 +696,15 @@ func (s *ChatService) embedOneDocument(ctx context.Context, doc *store.Document,
 		return err
 	}
 	if cnt < total {
+		s.recordEvent("ingest:doc_incomplete", "Document incomplete", fmt.Sprintf("%s wrote %d/%d chunks", doc.Filename, cnt, total), "error", "ingest", doc.CollectionID, 0, doc.ID, doc.BatchID)
 		return fmt.Errorf("incomplete: %d/%d chunks written", cnt, total)
 	}
-	if err := store.UpdateChunkNeighbors(s.DB, doc.ID); err != nil {
+	if jobID > 0 {
+		s.recordIngestLog(jobID, doc.ID, doc.CollectionID, doc.BatchID, "info", "completed", fmt.Sprintf("%s ready", doc.Filename), docStart, float64(total))
+	}
+	if err := store.UpdateDocumentStatus(s.DB, doc.ID, store.DocStatusReady, ""); err != nil {
 		return err
 	}
-	return store.UpdateDocumentStatus(s.DB, doc.ID, store.DocStatusReady, "")
+	s.recordEvent("ingest:doc_ready", "Document ready", fmt.Sprintf("%s ready with %d chunks", doc.Filename, total), "info", "ingest", doc.CollectionID, 0, doc.ID, doc.BatchID)
+	return nil
 }

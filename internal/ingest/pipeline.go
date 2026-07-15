@@ -3,297 +3,300 @@ package ingest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
-	"unicode"
 )
 
-type DocumentProfile struct {
-	Filename       string
-	Extension      string
-	Title          string
-	Summary        string
-	NormalizedText string
-	ContentHash    string
-	WordCount      int
-	CharCount      int
-	LineCount      int
-	ParagraphCount int
-	HeadingCount   int
-	ListCount      int
-	CodeBlockCount int
+// Loader extracts raw text from a supported file type.
+type Loader interface {
+	Name() string
+	Supports(filename string) bool
+	Load(data []byte, filename string) (string, error)
 }
 
-type ChunkSpec struct {
-	Content      string
-	Ord          int
-	Title        string
-	SectionPath  string
-	HeadingLevel int
-	Summary      string
-	ContentHash  string
-	TokenCount   int
-	CharCount    int
+// DocumentMetadata captures ingestion-time metadata derived from the raw file and extracted text.
+type DocumentMetadata struct {
+	Loader             string   `json:"loader"`
+	Extension          string   `json:"extension"`
+	SizeBytes          int64    `json:"sizeBytes"`
+	WordCount          int      `json:"wordCount"`
+	LineCount          int      `json:"lineCount"`
+	CharacterCount     int      `json:"characterCount"`
+	ParagraphCount     int      `json:"paragraphCount"`
+	Title              string   `json:"title"`
+	Summary            string   `json:"summary"`
+	Author             string   `json:"author"`
+	Language           string   `json:"language"`
+	LanguageConfidence float64  `json:"languageConfidence"`
+	ReadingLevel       float64  `json:"readingLevel"`
+	TokenEstimate      int      `json:"tokenEstimate"`
+	DocumentClass      string   `json:"documentClass"`
+	Keywords           []string `json:"keywords"`
+	Entities           []string `json:"entities"`
+	Tags               []string `json:"tags"`
+	Headings           []string `json:"headings"`
+	Pages              []int    `json:"pages"`
+	Tables             []string `json:"tables"`
+	Images             []string `json:"images"`
+	Links              []string `json:"links"`
+	CodeBlocks         []string `json:"codeBlocks"`
 }
 
-var headingPrefix = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+// LoadedDocument is the normalized result of running a file through a loader.
+type LoadedDocument struct {
+	Filename string
+	RawText  string
+	Text     string
+	Metadata DocumentMetadata
+}
 
-// NormalizeDocumentText collapses noise while preserving headings and paragraph breaks.
-func NormalizeDocumentText(raw string) string {
-	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-	raw = strings.ReplaceAll(raw, "\r", "\n")
-	lines := strings.Split(raw, "\n")
+var defaultLoaders []Loader
 
-	var out []string
-	var current strings.Builder
-	flush := func() {
-		if s := strings.TrimSpace(current.String()); s != "" {
-			out = append(out, strings.Join(strings.Fields(s), " "))
-		}
-		current.Reset()
+func ensureDefaultLoaders() {
+	if len(defaultLoaders) > 0 {
+		return
+	}
+	defaultLoaders = []Loader{
+		txtLoader{},
+		pdfLoader{},
+		docxLoader{},
+		markdownLoader{},
+		htmlLoader{},
+		csvLoader{},
+		jsonLoader{},
+		zipLoader{},
+	}
+}
+
+// LoadDocumentBytes extracts and normalizes a file, returning a structured ingest envelope.
+func LoadDocumentBytes(data []byte, filename string) (LoadedDocument, error) {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		filename = "document.txt"
 	}
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			flush()
-			continue
-		}
-		if strings.HasPrefix(line, "#") {
-			flush()
-			out = append(out, strings.Join(strings.Fields(line), " "))
-			continue
-		}
-		if current.Len() > 0 {
-			current.WriteByte(' ')
-		}
-		current.WriteString(strings.Join(strings.Fields(line), " "))
+	loader := pickLoader(filename)
+	if loader == nil {
+		return LoadedDocument{}, fmt.Errorf("unsupported format: %s (supported: .txt, .md, .html, .csv, .json, .pdf, .docx, .zip)", strings.ToLower(filepath.Ext(filename)))
 	}
-	flush()
-	return strings.TrimSpace(strings.Join(out, "\n\n"))
+
+	rawText, err := loader.Load(data, filename)
+	if err != nil {
+		return LoadedDocument{}, err
+	}
+	text := NormalizeDocumentText(rawText)
+	meta := BuildDocumentMetadata(filename, data, text, loader.Name())
+
+	return LoadedDocument{
+		Filename: filename,
+		RawText:  rawText,
+		Text:     text,
+		Metadata: meta,
+	}, nil
 }
 
-// BuildDocumentProfile returns lightweight metadata for a document.
-func BuildDocumentProfile(filename, rawText string) DocumentProfile {
-	normalized := NormalizeDocumentText(rawText)
+// LoadDocumentText extracts and normalizes a file from disk.
+func LoadDocumentText(path string) (LoadedDocument, error) {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return LoadDocumentPath(path)
+	}
+	if strings.EqualFold(filepath.Ext(path), ".zip") {
+		return LoadDocumentPath(path)
+	}
+	data, err := osReadFile(path)
+	if err != nil {
+		return LoadedDocument{}, fmt.Errorf("reading file: %w", err)
+	}
+	return LoadDocumentBytes(data, path)
+}
+
+func pickLoader(filename string) Loader {
+	ensureDefaultLoaders()
+	for _, loader := range defaultLoaders {
+		if loader.Supports(filename) {
+			return loader
+		}
+	}
+	return nil
+}
+
+func BuildDocumentMetadata(filename string, data []byte, text string, loader string) DocumentMetadata {
 	ext := strings.ToLower(filepath.Ext(filename))
-	title := deriveDocumentTitle(filename, normalized)
-	summary := SummarizeText(normalized, 3)
-	hash := sha256.Sum256([]byte(normalized))
+	profile := ProfileDocument(filename, text, DocumentMetadata{})
+	return DocumentMetadata{
+		Loader:             loader,
+		Extension:          ext,
+		SizeBytes:          int64(len(data)),
+		WordCount:          len(strings.Fields(text)),
+		LineCount:          countMeaningfulLines(text),
+		CharacterCount:     len([]rune(text)),
+		ParagraphCount:     countParagraphs(text),
+		Title:              DetectTitle(filename, text),
+		Summary:            SummarizeDocument(text, 4),
+		Author:             DetectAuthor(text),
+		Language:           profile.Language,
+		LanguageConfidence: profile.LanguageConfidence,
+		ReadingLevel:       profile.ReadingLevel,
+		TokenEstimate:      profile.TokenEstimate,
+		DocumentClass:      profile.Class,
+		Keywords:           ExtractKeywords(text, 12),
+		Entities:           ExtractEntities(text, 12),
+		Tags:               ExtractTags(filename, text),
+		Headings:           ExtractHeadings(text),
+		Pages:              ExtractPages(text),
+		Tables:             ExtractTables(text),
+		Images:             ExtractImages(text),
+		Links:              ExtractLinks(text),
+		CodeBlocks:         ExtractCodeBlocks(text),
+	}
+}
 
-	lines := strings.Split(normalized, "\n")
-	wordCount := len(strings.Fields(normalized))
-	charCount := len([]rune(normalized))
-	paraCount := 0
-	headingCount := 0
-	listCount := 0
-	codeCount := 0
-	inCode := false
+func NormalizeDocumentText(raw string) string {
+	return normalizeExtractedText(raw)
+}
+
+func HashNormalizedText(text string) string {
+	sum := sha256.Sum256([]byte(NormalizeDocumentText(text)))
+	return hex.EncodeToString(sum[:])
+}
+
+func countMeaningfulLines(text string) int {
+	lines := strings.Split(text, "\n")
+	count := 0
 	for _, line := range lines {
-		t := strings.TrimSpace(line)
-		if t == "" {
-			continue
+		if strings.TrimSpace(line) != "" {
+			count++
 		}
-		if strings.HasPrefix(t, "```") {
-			inCode = !inCode
-			codeCount++
-			continue
-		}
-		if inCode {
-			continue
-		}
-		if strings.HasPrefix(t, "#") {
-			headingCount++
-		}
-		if isListLine(t) {
-			listCount++
-		}
-		paraCount++
 	}
-
-	return DocumentProfile{
-		Filename:       strings.TrimSpace(filename),
-		Extension:      ext,
-		Title:          title,
-		Summary:        summary,
-		NormalizedText: normalized,
-		ContentHash:    hex.EncodeToString(hash[:]),
-		WordCount:      wordCount,
-		CharCount:      charCount,
-		LineCount:      len(lines),
-		ParagraphCount: paraCount,
-		HeadingCount:   headingCount,
-		ListCount:      listCount,
-		CodeBlockCount: codeCount / 2,
-	}
+	return count
 }
 
-// BuildChunkSpecs attaches simple metadata to chunks split from a document.
-func BuildChunkSpecs(filename, rawText string, chunkSize, overlap int) ([]ChunkSpec, DocumentProfile) {
-	profile := BuildDocumentProfile(filename, rawText)
-	base := SplitText(profile.NormalizedText, chunkSize, overlap)
-	specs := make([]ChunkSpec, 0, len(base))
-
-	var activeSections []string
-	activeTitle := profile.Title
-	activeLevel := 0
-	for _, chunk := range base {
-		title, sectionPath, level := deriveChunkSection(chunk.Content, activeTitle, activeSections, profile.Title)
-		if title != "" {
-			activeTitle = title
+func countParagraphs(text string) int {
+	parts := strings.Split(strings.TrimSpace(text), "\n\n")
+	count := 0
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			count++
 		}
-		if sectionPath != "" {
-			activeSections = parseSectionPath(sectionPath)
-		}
-		if level > 0 {
-			activeLevel = level
-		}
-
-		content := strings.TrimSpace(chunk.Content)
-		specs = append(specs, ChunkSpec{
-			Content:      content,
-			Ord:          chunk.Ord,
-			Title:        chooseChunkTitle(content, activeTitle, profile.Title),
-			SectionPath:  sectionPath,
-			HeadingLevel: activeLevel,
-			Summary:      SummarizeText(content, 2),
-			ContentHash:  hashString(content),
-			TokenCount:   len(strings.Fields(content)),
-			CharCount:    len([]rune(content)),
-		})
 	}
-	return specs, profile
+	return count
 }
 
-func deriveDocumentTitle(filename, normalized string) string {
-	if title := firstHeading(normalized); title != "" {
-		return title
+func DetectTitle(filename, text string) string {
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			return strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+		}
+		if len([]rune(trimmed)) <= 120 {
+			return trimmed
+		}
+		break
 	}
-	base := filepath.Base(strings.TrimSpace(filename))
+	base := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
+	base = strings.TrimSpace(strings.ReplaceAll(base, "_", " "))
 	if base == "" {
-		return "Document"
-	}
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	base = strings.ReplaceAll(base, "_", " ")
-	base = strings.ReplaceAll(base, "-", " ")
-	base = strings.Join(strings.Fields(base), " ")
-	if base == "" {
-		return "Document"
+		return "Untitled document"
 	}
 	return strings.Title(base)
 }
 
-func firstHeading(text string) string {
-	for _, line := range strings.Split(text, "\n") {
-		t := strings.TrimSpace(line)
-		if !strings.HasPrefix(t, "#") {
-			continue
-		}
-		m := headingPrefix.FindStringSubmatch(t)
-		if len(m) == 3 {
-			return strings.TrimSpace(m[2])
-		}
-	}
-	return ""
+func trimSentence(s string) string {
+	return strings.TrimSpace(strings.Trim(s, " \t\r\n"))
 }
 
-func chooseChunkTitle(content, activeTitle, fallback string) string {
-	if title := firstHeading(content); title != "" {
-		return title
-	}
-	if activeTitle != "" {
-		return activeTitle
-	}
-	if fallback != "" {
-		return fallback
-	}
-	if s := firstLine(content); s != "" {
-		return s
-	}
-	return "Chunk"
-}
-
-func deriveChunkSection(content, activeTitle string, activeSections []string, fallback string) (title, sectionPath string, level int) {
-	lines := strings.Split(content, "\n")
-	sections := append([]string(nil), activeSections...)
-	for _, line := range lines {
-		t := strings.TrimSpace(line)
-		if t == "" {
-			continue
-		}
-		if m := headingPrefix.FindStringSubmatch(t); len(m) == 3 {
-			level = len(m[1])
-			title = strings.TrimSpace(m[2])
-			if level > 0 {
-				if len(sections) >= level {
-					sections = sections[:level-1]
-				}
-				sections = append(sections, title)
+func splitSentences(text string) []string {
+	var sentences []string
+	var cur strings.Builder
+	for _, r := range text {
+		cur.WriteRune(r)
+		if r == '.' || r == '!' || r == '?' {
+			s := trimSentence(cur.String())
+			if s != "" {
+				sentences = append(sentences, s)
 			}
-			break
+			cur.Reset()
 		}
 	}
-	if len(sections) > 0 {
-		sectionPath = strings.Join(sections, " > ")
-	} else if activeTitle != "" {
-		sectionPath = activeTitle
-	} else {
-		sectionPath = fallback
+	if tail := trimSentence(cur.String()); tail != "" {
+		sentences = append(sentences, tail)
 	}
-	return title, sectionPath, level
+	return sentences
 }
 
-func parseSectionPath(path string) []string {
-	if strings.TrimSpace(path) == "" {
-		return nil
+func SummarizeDocument(text string, maxSentences int) string {
+	text = NormalizeDocumentText(text)
+	if text == "" {
+		return ""
 	}
-	parts := strings.Split(path, " > ")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			out = append(out, part)
+	paras := strings.Split(text, "\n\n")
+	for _, para := range paras {
+		para = strings.TrimSpace(para)
+		if para != "" && len([]rune(para)) <= 260 {
+			return para
 		}
 	}
-	return out
-}
 
-func firstLine(text string) string {
-	for _, line := range strings.Split(text, "\n") {
-		t := strings.TrimSpace(line)
-		if t != "" {
-			return truncateText(t, 80)
+	sentences := splitSentences(text)
+	if len(sentences) == 0 {
+		words := strings.Fields(text)
+		if len(words) == 0 {
+			return ""
 		}
+		limit := minInt(35, len(words))
+		return strings.Join(words[:limit], " ")
 	}
-	return ""
+	if maxSentences <= 0 || maxSentences > len(sentences) {
+		maxSentences = minInt(3, len(sentences))
+	}
+	if maxSentences <= 0 {
+		maxSentences = 1
+	}
+	return strings.Join(sentences[:maxSentences], " ")
 }
 
-func hashString(text string) string {
-	sum := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(sum[:])
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
-func isListLine(line string) bool {
-	if line == "" {
-		return false
-	}
-	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") || strings.HasPrefix(line, "+ ") {
-		return true
-	}
-	if len(line) > 2 && unicode.IsDigit(rune(line[0])) && strings.Contains(line, ". ") {
-		return true
-	}
-	return false
+// osReadFile is defined as a shim so tests can swap it if needed.
+var osReadFile = func(path string) ([]byte, error) {
+	return os.ReadFile(path)
 }
 
-func truncateText(text string, limit int) string {
-	text = strings.TrimSpace(strings.Join(strings.Fields(text), " "))
-	if limit <= 0 || len(text) <= limit {
-		return text
-	}
-	if limit <= 3 {
-		return text[:limit]
-	}
-	return text[:limit-3] + "..."
+// --- loader implementations ---
+
+type txtLoader struct{}
+
+func (txtLoader) Name() string { return "text" }
+func (txtLoader) Supports(filename string) bool {
+	return strings.EqualFold(filepath.Ext(filename), ".txt") || filepath.Ext(filename) == ""
 }
+func (txtLoader) Load(data []byte, filename string) (string, error) {
+	return string(data), nil
+}
+
+type pdfLoader struct{}
+
+func (pdfLoader) Name() string { return "pdf" }
+func (pdfLoader) Supports(filename string) bool {
+	return strings.EqualFold(filepath.Ext(filename), ".pdf")
+}
+func (pdfLoader) Load(data []byte, filename string) (string, error) { return parsePDFBytes(data) }
+
+type docxLoader struct{}
+
+func (docxLoader) Name() string { return "docx" }
+func (docxLoader) Supports(filename string) bool {
+	return strings.EqualFold(filepath.Ext(filename), ".docx")
+}
+func (docxLoader) Load(data []byte, filename string) (string, error) { return parseDOCXBytes(data) }

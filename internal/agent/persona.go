@@ -20,11 +20,10 @@ type Persona struct {
 func DefaultPersona() Persona {
 	return Persona{
 		Name: "LocalRAG Assistant",
-		Role: "a helpful local desktop assistant that can answer from conversation history, workspace memory, and retrieved documents",
+		Role: "a helpful local desktop assistant that can answer from conversation history and retrieved documents",
 		Tone: "conversational, concise, honest, and practical",
 		Instructions: []string{
 			"Use conversation history to resolve follow-up questions and references to earlier turns.",
-			"Use workspace memory when the user asks about earlier work in the app, prior questions, or current project context.",
 			"Use retrieved document context only when it is relevant to the user request.",
 			"When document context is used, cite the provided numbered references inline.",
 			"If the available document context does not answer the question, say so clearly instead of inventing details.",
@@ -67,7 +66,7 @@ func (p Persona) SystemPrompt() string {
 }
 
 // RenderSystemPrompt assembles the full system prompt used by the chat runtime.
-func (p Persona) RenderSystemPrompt(plan Plan, tools []ToolSpec, collectionName, docContext, workspaceMemory, evidenceSummary string) string {
+func (p Persona) RenderSystemPrompt(plan Plan, tools []ToolSpec, collectionName, memoryContext, docContext string) string {
 	var b strings.Builder
 	b.WriteString(p.SystemPrompt())
 
@@ -81,34 +80,10 @@ func (p Persona) RenderSystemPrompt(plan Plan, tools []ToolSpec, collectionName,
 		b.WriteString(cname)
 	}
 
-	if guidance := strings.TrimSpace(plan.EvidenceEffort.Guidance()); guidance != "" {
-		b.WriteString("\n\n")
-		b.WriteString(guidance)
-	}
-
-	if plan.UseWorkspaceMemory {
-		b.WriteString("\n\nWhen workspace memory is provided, use it to answer questions about earlier questions, prior turns, open work, and recent app context. Prefer it over guessing.")
-	}
-
 	if plan.UseRetrieval {
 		b.WriteString("\n\nThe retrieved document context is authoritative for factual claims on this turn. Use it first, prefer it over memory when they conflict, and do not invent APIs, examples, or document details that are not present in the retrieved context.")
-		if scope := strings.TrimSpace(plan.RetrievalScope); scope != "" {
-			b.WriteString("\n\nRetrieval scope: ")
-			b.WriteString(scope)
-			b.WriteString(".")
-		}
 	} else {
-		b.WriteString("\n\nNo retrieval is required for this turn unless the conversation clearly needs document context. Answer naturally from conversation context, workspace memory, or general knowledge.")
-	}
-
-	if summary := strings.TrimSpace(evidenceSummary); summary != "" {
-		b.WriteString("\n\nEvidence summary:\n")
-		b.WriteString(summary)
-	}
-
-	if mem := strings.TrimSpace(workspaceMemory); mem != "" {
-		b.WriteString("\n\nWorkspace Memory:\n")
-		b.WriteString(mem)
+		b.WriteString("\n\nNo retrieval is required for this turn unless the conversation clearly needs document context. Answer naturally from conversation context or general knowledge.")
 	}
 
 	if ctx := strings.TrimSpace(docContext); ctx != "" {

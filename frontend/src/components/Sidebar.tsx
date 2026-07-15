@@ -7,7 +7,7 @@ interface SidebarProps {
   chats: Chat[]; activeChatId: number; tab: string; sidebarOpen: boolean;
   isIngesting: boolean; theme: Theme;
   onNewChat: () => void; onSelectChat: (id: number) => void;
-  onTabChange: (tab: "chat"|"search"|"cols") => void;
+  onTabChange: (tab: "chat"|"search"|"cols"|"diag"|"ext") => void;
   onToggleSidebar: () => void;
   onCtxMenu: (chatId: number, x: number, y: number) => void;
 }
@@ -25,6 +25,7 @@ export function Sidebar({chats,activeChatId,tab,sidebarOpen,isIngesting,theme,on
       <button onClick={onNewChat} style={{background:"none",border:"none",cursor:"pointer",color:T.text3,padding:6}} title="New Chat"><I.Plus/></button>
       <button onClick={()=>onTabChange("search")} style={{background:"none",border:"none",cursor:"pointer",color:tab==="search"?"rgba(99,102,241,0.8)":T.text3,padding:6}} title="Search"><I.SearchS/></button>
       <button onClick={()=>{onTabChange("cols")}} style={{background:"none",border:"none",cursor:"pointer",color:tab==="cols"?"rgba(99,102,241,0.8)":T.text3,padding:6}} title="Collections">{isIngesting?<I.Spinner/>:<I.Lib/>}</button>
+      <button onClick={()=>onTabChange("ext")} style={{background:"none",border:"none",cursor:"pointer",color:tab==="ext"?"rgba(168,85,247,0.8)":T.text3,padding:6}} title="Extensions"><I.Bolt/></button>
     </div>
   );
 
@@ -41,6 +42,8 @@ export function Sidebar({chats,activeChatId,tab,sidebarOpen,isIngesting,theme,on
           {isIngesting&&<span style={{position:"absolute",left:8,top:"50%",marginTop:-7}}><I.Spinner/></span>}
           <span style={{marginLeft:isIngesting?22:0,display:"flex",alignItems:"center",gap:8}}><I.Lib/> Collections{isIngesting&&<span style={{fontSize:10,color:"rgba(99,102,241,0.7)"}}> ingesting...</span>}</span>
         </button>
+        <button onClick={()=>onTabChange("diag")} style={{...navBtnStyle(T),background:tab==="diag"?"rgba(245,158,11,0.1)":"transparent"}}><I.Warning/> Diagnostics</button>
+        <button onClick={()=>onTabChange("ext")} style={{...navBtnStyle(T),background:tab==="ext"?"rgba(168,85,247,0.1)":"transparent"}}><I.Bolt/> Extensions</button>
       </div>
       <div style={{flex:1,overflowY:"auto",paddingTop:8}}>
         <div style={{fontSize:11,color:T.text3,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:8,paddingLeft:12,whiteSpace:"nowrap"}}>Chat History</div>

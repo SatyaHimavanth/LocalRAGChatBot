@@ -2,139 +2,37 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
-
-	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
+	"time"
 )
-
-type ChunkMetadata struct {
-	Title         string `json:"title"`
-	SectionPath   string `json:"sectionPath"`
-	HeadingLevel  int    `json:"headingLevel"`
-	Summary       string `json:"summary"`
-	ContentHash   string `json:"contentHash"`
-	TokenCount    int    `json:"tokenCount"`
-	CharCount     int    `json:"charCount"`
-	ParentChunkID int64  `json:"parentChunkId"`
-}
 
 type ChunkRecord struct {
 	ID            int64  `json:"id"`
 	DocumentID    int64  `json:"documentId"`
 	CollectionID  int64  `json:"collectionId"`
 	Content       string `json:"content"`
-	Ord           int    `json:"ord"`
-	Title         string `json:"title"`
-	SectionPath   string `json:"sectionPath"`
-	HeadingLevel  int    `json:"headingLevel"`
 	Summary       string `json:"summary"`
-	ContentHash   string `json:"contentHash"`
-	TokenCount    int    `json:"tokenCount"`
-	CharCount     int    `json:"charCount"`
-	ParentChunkID int64  `json:"parentChunkId"`
-	PrevChunkID   int64  `json:"prevChunkId"`
-	NextChunkID   int64  `json:"nextChunkId"`
+	Ord           int    `json:"ord"`
+	Level         int    `json:"level"`
+	Role          string `json:"role"`
+	ParentOrd     int    `json:"parentOrd"`
+	PrevOrd       int    `json:"prevOrd"`
+	NextOrd       int    `json:"nextOrd"`
+	ChunkHash     string `json:"chunkHash"`
+	EmbeddingHash string `json:"embeddingHash"`
+	HeadingPath   string `json:"headingPath"`
+	UpdatedAt     int64  `json:"updatedAt"`
 }
 
-// InsertChunkWithMetadata inserts a chunk and its embedding alongside richer metadata.
-func InsertChunkWithMetadata(db *sql.DB, docID int64, collectionID int64, content string, ord int, meta ChunkMetadata, embedding []float32) (int64, error) {
-	if db == nil {
-		return 0, fmt.Errorf("database not initialized")
-	}
-	if meta.TokenCount == 0 {
-		meta.TokenCount = len(strings.Fields(content))
-	}
-	if meta.CharCount == 0 {
-		meta.CharCount = len([]rune(content))
-	}
-	res, err := db.Exec(`
-        INSERT INTO chunks (
-            document_id, collection_id, content, ord,
-            title, section_path, heading_level, summary, content_hash,
-            token_count, char_count, parent_chunk_id, prev_chunk_id, next_chunk_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
-    `, docID, collectionID, content, ord,
-		strings.TrimSpace(meta.Title),
-		strings.TrimSpace(meta.SectionPath),
-		meta.HeadingLevel,
-		strings.TrimSpace(meta.Summary),
-		strings.TrimSpace(meta.ContentHash),
-		meta.TokenCount,
-		meta.CharCount,
-		meta.ParentChunkID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	chunkID, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-
-	blob, err := sqlite_vec.SerializeFloat32(embedding)
-	if err != nil {
-		return 0, err
-	}
-	if _, err = db.Exec("INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?, ?)", chunkID, blob); err != nil {
-		return 0, err
-	}
-	return chunkID, nil
-}
-
-// UpdateChunkNeighbors refreshes prev/next links for all chunks in a document.
-func UpdateChunkNeighbors(db *sql.DB, docID int64) error {
-	if db == nil {
-		return fmt.Errorf("database not initialized")
-	}
-	rows, err := db.Query(`SELECT id FROM chunks WHERE document_id = ? ORDER BY ord ASC, id ASC`, docID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	ids := make([]int64, 0)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	for i, id := range ids {
-		var prevID, nextID int64
-		if i > 0 {
-			prevID = ids[i-1]
-		}
-		if i+1 < len(ids) {
-			nextID = ids[i+1]
-		}
-		if _, err := db.Exec(`UPDATE chunks SET prev_chunk_id = ?, next_chunk_id = ? WHERE id = ?`, prevID, nextID, id); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// GetChunkByID returns a rich chunk record including metadata.
+// GetChunkByID returns the chunk row for a primary key.
 func GetChunkByID(db *sql.DB, chunkID int64) (*ChunkRecord, error) {
-	if db == nil {
-		return nil, fmt.Errorf("database not initialized")
-	}
 	var c ChunkRecord
 	err := db.QueryRow(`
-        SELECT id, document_id, collection_id, content, ord,
-               COALESCE(title, ''), COALESCE(section_path, ''), COALESCE(heading_level, 0),
-               COALESCE(summary, ''), COALESCE(content_hash, ''), COALESCE(token_count, 0),
-               COALESCE(char_count, 0), COALESCE(parent_chunk_id, 0), COALESCE(prev_chunk_id, 0),
-               COALESCE(next_chunk_id, 0)
-        FROM chunks WHERE id = ?
-    `, chunkID).Scan(&c.ID, &c.DocumentID, &c.CollectionID, &c.Content, &c.Ord, &c.Title, &c.SectionPath, &c.HeadingLevel,
-		&c.Summary, &c.ContentHash, &c.TokenCount, &c.CharCount, &c.ParentChunkID, &c.PrevChunkID, &c.NextChunkID)
+		SELECT id, document_id, collection_id, content, COALESCE(summary,''), ord, COALESCE(level,0), COALESCE(role,''), COALESCE(parent_ord,-1), COALESCE(prev_ord,-1), COALESCE(next_ord,-1), COALESCE(chunk_hash,''), COALESCE(embedding_hash,''), COALESCE(heading_path,''), COALESCE(updated_at, 0)
+		FROM chunks WHERE id = ? LIMIT 1`, chunkID).Scan(&c.ID, &c.DocumentID, &c.CollectionID, &c.Content, &c.Summary, &c.Ord, &c.Level, &c.Role, &c.ParentOrd, &c.PrevOrd, &c.NextOrd, &c.ChunkHash, &c.EmbeddingHash, &c.HeadingPath, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -144,32 +42,237 @@ func GetChunkByID(db *sql.DB, chunkID int64) (*ChunkRecord, error) {
 	return &c, nil
 }
 
-// GetChunksByDocument returns the ordered chunks for a document.
-func GetChunksByDocument(db *sql.DB, docID int64) ([]ChunkRecord, error) {
-	if db == nil {
-		return nil, fmt.Errorf("database not initialized")
+// GetChunkByDocumentAndOrd returns the chunk row for a document/ordinal pair.
+func GetChunkByDocumentAndOrd(db *sql.DB, docID int64, ord int) (*ChunkRecord, error) {
+	var c ChunkRecord
+	err := db.QueryRow(`
+		SELECT id, document_id, collection_id, content, COALESCE(summary,''), ord, COALESCE(level,0), COALESCE(role,''), COALESCE(parent_ord,-1), COALESCE(prev_ord,-1), COALESCE(next_ord,-1), COALESCE(chunk_hash,''), COALESCE(embedding_hash,''), COALESCE(heading_path,''), COALESCE(updated_at, 0)
+		FROM chunks WHERE document_id = ? AND ord = ? LIMIT 1`, docID, ord).Scan(&c.ID, &c.DocumentID, &c.CollectionID, &c.Content, &c.Summary, &c.Ord, &c.Level, &c.Role, &c.ParentOrd, &c.PrevOrd, &c.NextOrd, &c.ChunkHash, &c.EmbeddingHash, &c.HeadingPath, &c.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetChunksByDocument returns all chunk rows for a document ordered by ord.
+func GetChunksByDocument(db *sql.DB, docID int64) ([]ChunkRecord, error) {
 	rows, err := db.Query(`
-        SELECT id, document_id, collection_id, content, ord,
-               COALESCE(title, ''), COALESCE(section_path, ''), COALESCE(heading_level, 0),
-               COALESCE(summary, ''), COALESCE(content_hash, ''), COALESCE(token_count, 0),
-               COALESCE(char_count, 0), COALESCE(parent_chunk_id, 0), COALESCE(prev_chunk_id, 0),
-               COALESCE(next_chunk_id, 0)
-        FROM chunks WHERE document_id = ? ORDER BY ord ASC, id ASC
-    `, docID)
+		SELECT id, document_id, collection_id, content, COALESCE(summary,''), ord, COALESCE(level,0), COALESCE(role,''), COALESCE(parent_ord,-1), COALESCE(prev_ord,-1), COALESCE(next_ord,-1), COALESCE(chunk_hash,''), COALESCE(embedding_hash,''), COALESCE(heading_path,''), COALESCE(updated_at, 0)
+		FROM chunks WHERE document_id = ? ORDER BY ord ASC`, docID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
 	var out []ChunkRecord
 	for rows.Next() {
 		var c ChunkRecord
-		if err := rows.Scan(&c.ID, &c.DocumentID, &c.CollectionID, &c.Content, &c.Ord, &c.Title, &c.SectionPath, &c.HeadingLevel,
-			&c.Summary, &c.ContentHash, &c.TokenCount, &c.CharCount, &c.ParentChunkID, &c.PrevChunkID, &c.NextChunkID); err != nil {
+		if err := rows.Scan(&c.ID, &c.DocumentID, &c.CollectionID, &c.Content, &c.Summary, &c.Ord, &c.Level, &c.Role, &c.ParentOrd, &c.PrevOrd, &c.NextOrd, &c.ChunkHash, &c.EmbeddingHash, &c.HeadingPath, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// DeleteChunk removes a single chunk and its vector/embedding metadata.
+func DeleteChunk(db *sql.DB, chunkID int64) error {
+	if err := NewSQLiteVectorStore(db).DeleteChunkEmbedding(chunkID); err != nil {
+		return err
+	}
+	_, err := db.Exec(`DELETE FROM chunks WHERE id = ?`, chunkID)
+	return err
+}
+
+// InsertChunkWithHashes inserts a chunk and persists chunk/embedding hashes.
+func InsertChunkWithHashes(db *sql.DB, docID int64, collectionID int64, content string, ord int, chunkHash string, embedding []float32) (int64, error) {
+	return InsertChunkWithHierarchy(db, docID, collectionID, content, ord, 0, "leaf", -1, -1, -1, "", nil, chunkHash, embedding)
+}
+
+// InsertChunkWithHierarchy inserts a chunk row with hierarchy metadata and optional embedding.
+func InsertChunkWithHierarchy(db *sql.DB, docID int64, collectionID int64, content string, ord int, level int, role string, parentOrd, prevOrd, nextOrd int, summary string, headingPath []string, chunkHash string, embedding []float32) (int64, error) {
+	now := time.Now().Unix()
+	hPath := encodeHeadingPath(headingPath)
+	if role == "" {
+		role = "leaf"
+	}
+	res, err := db.Exec(`INSERT INTO chunks (document_id, collection_id, content, summary, ord, level, role, parent_ord, prev_ord, next_ord, chunk_hash, embedding_hash, heading_path, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)`,
+		docID, collectionID, content, summary, ord, level, role, parentOrd, prevOrd, nextOrd, chunkHash, hPath, now)
+	if err != nil {
+		return 0, err
+	}
+	chunkID, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+
+	if len(embedding) == 0 {
+		return chunkID, nil
+	}
+	if err := NewSQLiteVectorStore(db).UpsertChunkEmbedding(chunkID, embedding); err != nil {
+		return 0, err
+	}
+	return chunkID, nil
+}
+
+func encodeHeadingPath(path []string) string {
+	if len(path) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(path)
+	if err != nil {
+		return strings.Join(path, " / ")
+	}
+	return string(b)
+}
+
+func decodeHeadingPath(encoded string) []string {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil
+	}
+	var path []string
+	if err := json.Unmarshal([]byte(encoded), &path); err == nil {
+		cleaned := make([]string, 0, len(path))
+		for _, p := range path {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				cleaned = append(cleaned, p)
+			}
+		}
+		if len(cleaned) > 0 {
+			return cleaned
+		}
+	}
+	parts := strings.FieldsFunc(encoded, func(r rune) bool {
+		return r == '/' || r == '>' || r == '|' || r == ','
+	})
+	cleaned := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(strings.Trim(p, "[]"))
+		if p != "" {
+			cleaned = append(cleaned, p)
+		}
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
+}
+
+// GetChunkNeighborhood returns the target chunk plus nearby chunks from the same document.
+func GetChunkNeighborhood(db *sql.DB, chunkID int64, radius int) ([]ChunkRecord, error) {
+	center, err := GetChunkByID(db, chunkID)
+	if err != nil || center == nil {
+		return nil, err
+	}
+	if radius < 0 {
+		radius = 0
+	}
+	all, err := GetChunksByDocument(db, center.DocumentID)
+	if err != nil {
+		return nil, err
+	}
+	byOrd := make(map[int]ChunkRecord, len(all))
+	for _, c := range all {
+		byOrd[c.Ord] = c
+	}
+	seen := make(map[int64]struct{}, len(all))
+	out := make([]ChunkRecord, 0, 2*radius+3)
+	add := func(ord int) {
+		if ord < 0 {
+			return
+		}
+		c, ok := byOrd[ord]
+		if !ok {
+			return
+		}
+		if _, exists := seen[c.ID]; exists {
+			return
+		}
+		seen[c.ID] = struct{}{}
+		out = append(out, c)
+	}
+	add(center.Ord)
+	if center.ParentOrd >= 0 {
+		add(center.ParentOrd)
+	}
+	for step := 1; step <= radius; step++ {
+		add(center.Ord - step)
+		add(center.Ord + step)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Ord == out[j].Ord {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Ord < out[j].Ord
+	})
+	return out, nil
+}
+
+func hashEmbedding(embedding []float32) string {
+	if len(embedding) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, v := range embedding {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(fmt.Sprintf("%.6f", v))
+	}
+	return HashNormalizedText(b.String())
+}
+
+// ChunkSimilarity returns a simple overlap score between chunk hash sets.
+func ChunkSimilarity(a, b []ChunkRecord) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	setA := map[string]struct{}{}
+	for _, c := range a {
+		if c.Role == "summary" {
+			continue
+		}
+		if c.ChunkHash != "" {
+			setA[c.ChunkHash] = struct{}{}
+		}
+	}
+	if len(setA) == 0 {
+		return 0
+	}
+	match := 0
+	for _, c := range b {
+		if c.Role == "summary" {
+			continue
+		}
+		if c.ChunkHash == "" {
+			continue
+		}
+		if _, ok := setA[c.ChunkHash]; ok {
+			match++
+		}
+	}
+	denom := maxInt(1, len(setA))
+	return float64(match) / float64(denom)
+}
+
+// TopChunkHashes returns sorted hashes for duplicate detection.
+func TopChunkHashes(chunks []ChunkRecord, limit int) []string {
+	out := make([]string, 0, len(chunks))
+	for _, c := range chunks {
+		if c.Role == "summary" {
+			continue
+		}
+		if c.ChunkHash != "" {
+			out = append(out, c.ChunkHash)
+		}
+	}
+	sort.Strings(out)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
