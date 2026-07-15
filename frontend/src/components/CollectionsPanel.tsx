@@ -8,7 +8,7 @@ type SortDir = "asc" | "desc";
 
 interface CollectionsPanelProps {
   cols: Collection[]; activeColId: number; activeCollection?: Collection; idocs: DocRecord[];
-  selectedDocId: number|null; selectedDocContent: string; selectedDocChunks: ChunkRecord[];
+  selectedDocId: number|null; selectedDocName: string; selectedDocContent: string; selectedDocChunks: ChunkRecord[];
   incompleteJobs: IncompleteJob[];
   ingestLogs: IngestLogEntry[];
   isIngesting: boolean;
@@ -34,6 +34,19 @@ const queueBtn = (T: ThemeVars, danger?: boolean): CSSProperties => ({
   cursor: "pointer",
   fontSize: 11,
 });
+
+
+const summarizeChunk = (text: string, max = 220) => {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= max) return clean;
+  return clean.slice(0, max).trimEnd() + "…";
+};
+
+const getChunkBadge = (chunk: ChunkRecord) => {
+  if (chunk.role === "summary") return "Summary";
+  if (chunk.level > 0) return `Level ${chunk.level}`;
+  return "Chunk";
+};
 
 const decodeHeadingPath = (raw?: string) => {
   if (!raw) return "";
@@ -231,7 +244,7 @@ export function CollectionsPanel(props:CollectionsPanelProps){
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginTop:2,flexShrink:0}}>
             <div>
               <div style={{fontSize:13,fontWeight:600}}>Chunk Browser</div>
-              <div style={{fontSize:11,color:T.text3}}>{props.selectedDocId ? selectedDocName : "No document selected"} · {props.selectedDocChunks.length} chunk{props.selectedDocChunks.length === 1 ? "" : "s"}</div>
+              <div style={{fontSize:11,color:T.text3}}>{props.selectedDocId ? props.selectedDocName : "No document selected"} · {props.selectedDocChunks.length} chunk{props.selectedDocChunks.length === 1 ? "" : "s"}</div>
             </div>
             {props.selectedDocId && props.selectedDocChunks.length > 0 && (
               <button onClick={() => props.onViewDoc(props.selectedDocId!)} style={queueBtn(T)}>Reload</button>
@@ -253,7 +266,7 @@ export function CollectionsPanel(props:CollectionsPanelProps){
                       <span style={{fontSize:11,color:T.text3}}>level {chunk.level}</span>
                       <span style={{fontSize:11,color:T.text3}}>#{chunk.id}</span>
                     </div>
-                    <button onClick={() => props.onInspectChunk(chunk.id, selectedDocName)} style={{padding:"4px 10px",borderRadius:999,border:"1px solid "+T.border,background:"transparent",color:T.text2,cursor:"pointer",fontSize:11}}>Inspect context</button>
+                    <button onClick={() => props.onInspectChunk(chunk.id, props.selectedDocName)} style={{padding:"4px 10px",borderRadius:999,border:"1px solid "+T.border,background:"transparent",color:T.text2,cursor:"pointer",fontSize:11}}>Inspect context</button>
                   </div>
                   {chunk.headingPath ? (
                     <div style={{fontSize:11,color:T.text3,marginBottom:6}}>

@@ -106,7 +106,7 @@ func buildEvidenceBundle(db *sql.DB, collectionID int64, collectionName, query, 
 
 		primaryKey := center.ID
 		for _, rec := range neighborhood {
-			kind, relation := classifyEvidenceRelation(center, rec)
+			kind, relation := classifyEvidenceRelation(*center, rec)
 			if rec.ID == center.ID {
 				kind = "primary"
 				relation = "retrieved"
@@ -311,7 +311,7 @@ func classifyEvidenceRelation(center, rec store.ChunkRecord) (kind string, relat
 	}
 }
 
-func newEvidenceNode(rec store.ChunkRecord, hit store.ScoredChunk, kind, relation, filename string, support float64) EvidenceNode {
+func newEvidenceNode(rec store.ChunkRecord, hit store.ScoredChunk, kind, relation string, support float64, filename string) EvidenceNode {
 	content := strings.TrimSpace(rec.Content)
 	if rec.Role == "summary" && strings.TrimSpace(rec.Summary) != "" {
 		content = strings.TrimSpace(rec.Summary)

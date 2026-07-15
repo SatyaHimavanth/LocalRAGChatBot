@@ -8,7 +8,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
 import { SearchPanel } from "./components/SearchPanel";
 import { CollectionsPanel } from "./components/CollectionsPanel";
-import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
+import { DiagnosticsPanel } from "./components/DiagnosticsModal";
 import { ExtensionsPanel } from "./components/ExtensionsPanel";
 import { FileUploadModal } from "./components/FileUploadModal";
 import { Modal, ConfirmModal } from "./components/Modal";
@@ -216,6 +216,7 @@ export default function App() {
   const [colDropdownOpen,setColDropdownOpen]=useState(false);
   const [colSearch,setColSearch]=useState("");
   const colDropdownRef=useRef<HTMLDivElement>(null);
+  const selectedDoc = selectedDocId ? idocs.find(doc => doc.id === selectedDocId) : undefined;
 
   useEffect(()=>{const h=(e:MouseEvent)=>{if(ctxRef.current&&!ctxRef.current.contains(e.target as Node))setCtxMenuChatId(null)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
   useEffect(()=>{const h=(e:MouseEvent)=>{if(colDropdownRef.current&&!colDropdownRef.current.contains(e.target as Node))setColDropdownOpen(false)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
@@ -687,18 +688,6 @@ useEffect(()=>{
     return raw;
   };
 
-  const summarizeChunk = (text: string, max = 220) => {
-    const clean = text.replace(/\s+/g, " ").trim();
-    if (clean.length <= max) return clean;
-    return clean.slice(0, max).trimEnd() + "…";
-  };
-
-  const getChunkBadge = (chunk: ChunkRecord) => {
-    if (chunk.role === "summary") return "Summary";
-    if (chunk.level > 0) return `Level ${chunk.level}`;
-    return "Chunk";
-  };
-
   const openChunkContext = useCallback(async (chunkId: number, filename: string) => {
     setChunkContextModal({ open: true, loading: true, error: "", title: `Chunk context — ${filename}`, items: [] });
     try {
@@ -825,7 +814,7 @@ useEffect(()=>{
       {tab === "search" && <SearchPanel sq={sq} sResults={sResults} sBusy={sBusy} sDone={sDone} searchFilter={searchFilter} filteredResults={filteredResults} searchScope={searchScope} searchLimit={searchLimit} searchMinScore={searchMinScore} T={T} displayScore={displayScore}
         onSearch={doSearch} onClear={clearSearch} onSqChange={setSq} onFilterChange={setSearchFilter} onScopeChange={setSearchScope} onLimitChange={setSearchLimit} onMinScoreChange={setSearchMinScore} onInspectChunk={openChunkContext} />}
 
-      {tab === "cols" && <CollectionsPanel cols={cols} activeColId={activeColId} activeCollection={activeCol} idocs={idocs} selectedDocId={selectedDocId} selectedDocContent={selectedDocContent} selectedDocChunks={selectedDocChunks} T={T}
+      {tab === "cols" && <CollectionsPanel cols={cols} activeColId={activeColId} activeCollection={activeCol} idocs={idocs} selectedDocId={selectedDocId} selectedDocName={selectedDoc?.filename || selectedDoc?.title || "Document"} selectedDocContent={selectedDocContent} selectedDocChunks={selectedDocChunks} T={T}
         incompleteJobs={incompleteJobs} ingestLogs={ingestLogs} isIngesting={isIngesting}
         onSelectCol={setActiveColId} onDeleteCol={confirmDeleteCollection} onDeleteDoc={confirmDeleteDocument} onViewDoc={viewDocumentContent} onInspectChunk={openChunkContext} onRefresh={() => loadDocs(activeColId)}
         newColName={newColName} onNewColNameChange={setNewColName} onCreateCol={createCol} onOpenUploadModal={() => setShowUploadModal(true)} onEditCollectionProfile={openCollectionProfile}
