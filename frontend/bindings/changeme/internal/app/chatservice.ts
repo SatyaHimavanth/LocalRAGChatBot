@@ -86,6 +86,13 @@ export function FindDuplicateDocuments(collectionID: number, filename: string, c
     return $Call.ByID(717348378, collectionID, filename, content);
 }
 
+/**
+ * GetChatBranchOptions returns sibling user prompts for the branch switcher.
+ */
+export function GetChatBranchOptions(sessionID: number, messageID: number): $CancellablePromise<store$0.ChatMessage[] | null> {
+    return $Call.ByID(2474494412, sessionID, messageID);
+}
+
 export function GetChatMessages(sessionID: number): $CancellablePromise<store$0.ChatMessage[] | null> {
     return $Call.ByID(227903766, sessionID);
 }
@@ -250,6 +257,13 @@ export function SearchMetadata(query: string, collectionID: number, topK: number
  */
 export function SearchWorkspace(query: string, collectionID: number, sessionID: number, topK: number): $CancellablePromise<$models.SearchResult[] | null> {
     return $Call.ByID(1666949257, query, collectionID, sessionID, topK);
+}
+
+/**
+ * SelectChatBranch switches the visible conversation to the selected prompt's branch.
+ */
+export function SelectChatBranch(sessionID: number, messageID: number): $CancellablePromise<void> {
+    return $Call.ByID(689188206, sessionID, messageID);
 }
 
 export function SendMessage(sessionID: number, collectionID: number, prompt: string): $CancellablePromise<void> {

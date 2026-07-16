@@ -505,10 +505,9 @@ func (s *ChatService) stageOne(f IngestFilePayload, collectionID int64, batchID 
 	if err != nil {
 		return StageResult{Filename: filename, Status: "error", Message: "Database error checking duplicates"}
 	}
-	globalExisting, _ := store.GetDocumentByHashAny(s.DB, hash)
-	if globalExisting != nil && globalExisting.CollectionID != collectionID && !f.Replace {
-		return StageResult{Filename: filename, Status: "duplicate", Message: fmt.Sprintf("Already exists in another collection: %s", globalExisting.Filename), DocID: globalExisting.ID}
-	}
+	// Documents are collection-scoped. The same content may deliberately be
+	// indexed in multiple collections, where it can have different purpose and
+	// retrieval scope. Only a matching document in this collection is a duplicate.
 	if existing != nil {
 		if existing.Status == store.DocStatusReady && !f.Replace {
 			createdTime := time.Unix(existing.CreatedAt, 0).Format("Jan 2, 2006 at 15:04")

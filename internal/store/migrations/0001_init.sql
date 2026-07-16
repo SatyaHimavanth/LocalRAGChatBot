@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 	agent_metadata_json TEXT NOT NULL DEFAULT ''
 );
 
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session_parent
+ON chat_messages(session_id, parent_message_id, created_at, id);
+
 -- Stores source chunks referenced in AI responses
 CREATE TABLE IF NOT EXISTS chat_message_sources (
 	id INTEGER PRIMARY KEY,

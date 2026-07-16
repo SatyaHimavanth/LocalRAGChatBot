@@ -268,6 +268,56 @@ func GetChatMessages(db *sql.DB, sessionID int64) ([]ChatMessage, error) {
 	return chain, nil
 }
 
+// GetChatBranchOptions returns the user-message variants that share the same
+// parent as messageID. It is used to render the branch switcher below an edited
+// prompt without exposing unrelated turns.
+func GetChatBranchOptions(db *sql.DB, sessionID, messageID int64) ([]ChatMessage, error) {
+	msg, err := getChatMessageByID(db, sessionID, messageID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`SELECT id, session_id, role, content, created_at, COALESCE(cancelled,0), COALESCE(parent_message_id,0), COALESCE(agent_metadata_json,'')
+		FROM chat_messages WHERE session_id = ? AND role = 'user' AND COALESCE(parent_message_id,0) = ? ORDER BY created_at ASC, id ASC`, sessionID, msg.ParentMessageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChatMessage
+	for rows.Next() {
+		var option ChatMessage
+		var cancelled int64
+		if err := rows.Scan(&option.ID, &option.SessionID, &option.Role, &option.Content, &option.CreatedAt, &cancelled, &option.ParentMessageID, &option.AgentMetadataJSON); err != nil {
+			return nil, err
+		}
+		option.Cancelled = cancelled != 0
+		out = append(out, option)
+	}
+	return out, rows.Err()
+}
+
+// SelectChatBranch makes messageID's descendant leaf the active conversation
+// branch. The recursive walk follows the newest child at each turn, which is
+// the branch generated from the selected user prompt.
+func SelectChatBranch(db *sql.DB, sessionID, messageID int64) error {
+	if _, err := getChatMessageByID(db, sessionID, messageID); err != nil {
+		return err
+	}
+	var leafID int64
+	err := db.QueryRow(`WITH RECURSIVE branch(id, depth) AS (
+		SELECT id, 0 FROM chat_messages WHERE id = ? AND session_id = ?
+		UNION ALL
+		SELECT child.id, branch.depth + 1
+		FROM chat_messages child JOIN branch ON child.parent_message_id = branch.id
+		WHERE child.session_id = ?
+	)
+	SELECT id FROM branch ORDER BY depth DESC, id DESC LIMIT 1`, messageID, sessionID, sessionID).Scan(&leafID)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE chat_sessions SET current_leaf_message_id = ? WHERE id = ?`, leafID, sessionID)
+	return err
+}
+
 func boolToInt(v bool) int64 {
 	if v {
 		return 1

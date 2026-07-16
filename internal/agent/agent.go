@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"sync"
 )
@@ -56,7 +57,7 @@ func WithPlanner(planner Planner) Option {
 }
 
 // Decide returns the plan for a request.
-func (a *Agent) Decide(req Request) Plan {
+func (a *Agent) Decide(ctx context.Context, req Request) (Plan, error) {
 	a.mu.RLock()
 	planner := a.Planner
 	persona := a.Persona
@@ -65,7 +66,7 @@ func (a *Agent) Decide(req Request) Plan {
 	if planner == nil {
 		planner = NewHeuristicPlanner()
 	}
-	return planner.Decide(req, persona, tools)
+	return planner.Decide(ctx, req, persona, tools)
 }
 
 // RenderSystemPrompt composes the system prompt from persona, tools and state.
@@ -83,7 +84,7 @@ func ToolPrompt(tools []ToolSpec) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("Available capabilities:\n")
+	b.WriteString("The following happen automatically based on the conversation; you do not invoke them yourself:\n")
 	for _, tool := range tools {
 		name := strings.TrimSpace(tool.Name)
 		if name == "" {

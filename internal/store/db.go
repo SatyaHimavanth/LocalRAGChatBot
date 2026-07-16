@@ -75,26 +75,25 @@ func getDBPath(dbFileName string) (string, error) {
 }
 
 func initializeSchema(db *sql.DB) error {
-    files := []string{
-        "0001_init.sql",
-        "0002_fts5.sql",
-        "0003_vec.sql",
-        "0004_ingestion_queue.sql",
-        "0005_workspace_memory.sql",
-        "0006_extension_hooks.sql",
-        "0007_event_log.sql",
-    }
+	files := []string{
+		"0001_init.sql",
+		"0002_fts5.sql",
+		"0003_vec.sql",
+		"0004_ingestion_queue.sql",
+		"0005_workspace_memory.sql",
+		"0006_extension_hooks.sql",
+		"0007_event_log.sql",
+	}
 
-    for _, f := range files {
-        sqlBytes, err := migrationsFS.ReadFile("migrations/" + f)
-        if err != nil {
-            return err
-        }
+	for _, f := range files {
+		sqlBytes, err := migrationsFS.ReadFile("migrations/" + f)
+		if err != nil {
+			return err
+		}
 
-        if _, err := db.Exec(string(sqlBytes)); err != nil {
-            return err
-        }
-    }
-
-    return nil
+		if _, err := db.Exec(string(sqlBytes)); err != nil {
+			return err
+		}
+	}
+	return nil
 }

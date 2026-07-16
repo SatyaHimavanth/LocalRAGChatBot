@@ -340,6 +340,22 @@ func (s *ChatService) GetChatMessages(sessionID int64) ([]store.ChatMessage, err
 	return store.GetChatMessages(s.DB, sessionID)
 }
 
+// GetChatBranchOptions returns sibling user prompts for the branch switcher.
+func (s *ChatService) GetChatBranchOptions(sessionID int64, messageID int64) ([]store.ChatMessage, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	return store.GetChatBranchOptions(s.DB, sessionID, messageID)
+}
+
+// SelectChatBranch switches the visible conversation to the selected prompt's branch.
+func (s *ChatService) SelectChatBranch(sessionID int64, messageID int64) error {
+	if s.DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	return store.SelectChatBranch(s.DB, sessionID, messageID)
+}
+
 func (s *ChatService) DeleteChat(sessionID int64) error {
 	if s.DB == nil {
 		return fmt.Errorf("database not initialized")
@@ -619,16 +635,26 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 		history = s.loadConversationHistory(sessionID)
 	}
 
+	hasDocuments := false
+	if s.DB != nil {
+		if docs, docErr := s.GetDocumentsByCollection(collectionID); docErr == nil {
+			hasDocuments = len(docs) > 0
+		}
+	}
+
 	ag := s.ensureAgent()
 	memoryContext := s.loadConversationMemory(sessionID)
-	plan := ag.Decide(agent.Request{
+	plan, planErr := ag.Decide(ctx, agent.Request{
 		Prompt:          prompt,
 		History:         history,
 		CollectionID:    collectionID,
 		CollectionName:  s.getCollectionName(collectionID),
-		HasDocuments:    s.DB != nil,
+		HasDocuments:    hasDocuments,
 		WorkspaceMemory: memoryContext,
 	})
+	if planErr != nil {
+		plan = agent.Plan{UseDirect: true, Reason: "planner error: " + planErr.Error()}
+	}
 
 	meta.UsedRetrieval = plan.UseRetrieval
 	meta.UsedMemory = plan.UseMemory
@@ -1687,9 +1713,6 @@ func buildMessagesWithBudget(ag *agent.Agent, plan agent.Plan, bundle EvidenceBu
 	contextString := ""
 	if plan.UseRetrieval {
 		contextString = bundle.ContextString(scaledMaxContext)
-		if contextString == "" {
-			contextString = "No retrieved evidence was available."
-		}
 	}
 	if scaledMaxContext > 0 && len(contextString) > scaledMaxContext {
 		contextString = contextString[:scaledMaxContext]

@@ -133,7 +133,7 @@ export function DiagnosticsPanel(props: DiagnosticsPanelProps) {
     : "No active collection profile";
 
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: 20, overflow: "hidden", minWidth: 0 }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: 20, overflowY: "auto", overflowX: "hidden", minWidth: 0 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>

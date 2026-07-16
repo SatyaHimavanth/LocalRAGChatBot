@@ -1,5 +1,5 @@
 export interface Message { id: string; sender: "user" | "ai" | "system"; text: string; cancelled?: boolean; parentMessageId?: number; metadata?: AgentResult; }
-export interface Chat { id: number; title: string; messages: Message[]; createdAt: number; archived: boolean; pinned: boolean; currentLeafMessageId?: number; messageSources?: Record<number, SourceRef[]>; agentPlan?: AgentPlan; lastAgentResult?: AgentResult; }
+export interface Chat { id: number; title: string; messages: Message[]; createdAt: number; archived: boolean; pinned: boolean; currentLeafMessageId?: number; messageSources?: Record<number, SourceRef[]>; branchOptions?: Record<number, number[]>; agentPlan?: AgentPlan; lastAgentResult?: AgentResult; }
 export interface SourceRef { id?: number; refNumber: number; chunkId: number; content: string; filename: string; collectionId: number; collectionName: string; similarity: number; }
 export interface Collection { id: number; name: string; docCount: number; embeddingModel?: string; embeddingDims?: number; vectorBackend?: string; createdAt?: number; updatedAt?: number; }
 export interface DocRecord {

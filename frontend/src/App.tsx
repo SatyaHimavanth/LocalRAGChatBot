@@ -1,7 +1,7 @@
 ﻿import { useState, useEffect, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { Events } from "@wailsio/runtime";
-import { SendMessage, IngestFile, CreateCollection, UpdateCollectionProfile, GetCollections, CreateChat, GetChats, GetChatMessages, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, GetEventLogs, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, SearchMetadata, SearchWorkspace, GetDocumentContent, GetDocumentChunks, GetSessionSources, GetChunkContext, CancelGeneration, CancelIngest, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete, GetExtensionHooks, UpdateExtensionHook, ResetExtensionHooks } from "../bindings/changeme/internal/app/chatservice";
+import { SendMessage, IngestFile, CreateCollection, UpdateCollectionProfile, GetCollections, CreateChat, GetChats, GetChatMessages, GetChatBranchOptions, SelectChatBranch, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, GetEventLogs, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, SearchMetadata, SearchWorkspace, GetDocumentContent, GetDocumentChunks, GetSessionSources, GetChunkContext, CancelGeneration, CancelIngest, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete, GetExtensionHooks, UpdateExtensionHook, ResetExtensionHooks } from "../bindings/changeme/internal/app/chatservice";
 import { Message, Chat, Collection, DocRecord, SearchResult, SearchScope, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob, IngestLogEntry, EventLogEntry, AgentPlan, AgentResult, ChunkRecord, ExtensionHook } from "./types";
 import { I } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
@@ -324,6 +324,9 @@ useEffect(()=>{
         }
         return { ...c, messages: ms, lastAgentResult: agentResult, currentLeafMessageId: backendMsgId };
       }));
+      // Reload the persisted leaf and its sibling list so the branch switcher
+      // appears immediately after an edited prompt completes.
+      void loadChats();
     }
   });
 
@@ -447,22 +450,34 @@ useEffect(()=>{
             /* ignore source loading errors */
           }
 
+          const messages = (ms || []).map((m: any) => ({
+            id: m.id.toString(),
+            sender: m.role === "user" ? "user" : "ai",
+            text: m.content,
+            cancelled: m.cancelled === true,
+            parentMessageId: Number(m.parentMessageId ?? m.ParentMessageID ?? 0) || undefined,
+            metadata: parseStoredAgentResult(m.agentMetadataJson ?? m.agentMetadataJSON ?? m.agentMetadata ?? ""),
+          })) as Message[];
+          const branchOptions: Record<number, number[]> = {};
+          await Promise.all(messages.filter((m) => m.sender === "user").map(async (m) => {
+            const messageId = Number(m.id);
+            if (!messageId) return;
+            try {
+              const options: any[] = await GetChatBranchOptions(sess.id, messageId) || [];
+              if (options.length > 1) branchOptions[messageId] = options.map((option) => Number(option.id));
+            } catch { /* Branch controls are optional for legacy databases. */ }
+          }));
+
           loaded.push({
             id: sess.id,
             title: sess.title || "New Chat",
-            messages: (ms || []).map((m: any) => ({
-              id: m.id.toString(),
-              sender: m.role === "user" ? "user" : "ai",
-              text: m.content,
-              cancelled: m.cancelled === true,
-              parentMessageId: Number(m.parentMessageId ?? m.ParentMessageID ?? 0) || undefined,
-              metadata: parseStoredAgentResult(m.agentMetadataJson ?? m.agentMetadataJSON ?? m.agentMetadata ?? ""),
-            })),
+            messages,
             createdAt: sess.createdAt * 1000,
             archived: sess.archived === true,
             pinned: sess.pinned === true,
             currentLeafMessageId: Number(sess.currentLeafMessageId ?? sess.currentLeafMessageID ?? 0) || undefined,
             messageSources: msgSources,
+            branchOptions,
           });
         }
         setChats(loaded);
@@ -480,7 +495,7 @@ useEffect(()=>{
 
   const submitPrompt = async (
     prompt: string,
-    options?: { parentMessageId?: number; renameChat?: boolean }
+    options?: { parentMessageId?: number; replaceFromMessageId?: number; renameChat?: boolean }
   ) => {
     if (!prompt.trim() || gen || isArchived) return;
 
@@ -521,7 +536,12 @@ useEffect(()=>{
           ? {
               ...c,
               title: newTitle,
-              messages: [...c.messages, { id: tempId, sender: "user", text: msg, parentMessageId: options?.parentMessageId }],
+              messages: [
+                ...(options?.replaceFromMessageId
+                  ? c.messages.slice(0, Math.max(0, c.messages.findIndex((message) => Number(message.id) === options.replaceFromMessageId)))
+                  : c.messages),
+                { id: tempId, sender: "user", text: msg, parentMessageId: options?.parentMessageId },
+              ],
             }
           : c
       )
@@ -552,7 +572,22 @@ useEffect(()=>{
   };
 
   const handleBranchFromMessage = async (messageId: number, prompt: string) => {
-    await submitPrompt(prompt, { parentMessageId: messageId, renameChat: false });
+    const edited = activeChat?.messages.find((message) => Number(message.id) === messageId);
+    await submitPrompt(prompt, {
+      parentMessageId: edited?.parentMessageId,
+      replaceFromMessageId: messageId,
+      renameChat: false,
+    });
+  };
+
+  const handleSelectBranch = async (messageId: number) => {
+    if (!activeChatId || gen) return;
+    try {
+      await SelectChatBranch(activeChatId, messageId);
+      await loadChats();
+    } catch (e) {
+      addToast("error", getErrMsg(e));
+    }
   };
 
   // Two-phase batch: extract all files first, then embed (durable on backend).
@@ -809,7 +844,7 @@ useEffect(()=>{
 
       {tab === "chat" && <ChatPanel activeChat={activeChat} isArchived={isArchived} input={input} gen={gen} statusMsgs={statusMsgs} T={T} theme={theme} collSelector={collSelector}
         onInputChange={setInput} onSend={send} onThemeToggle={() => setTheme(theme === "dark" ? "light" : "dark")} onOpenUploadModal={() => setShowUploadModal(true)}
-        onStopGeneration={gen ? handleStopGeneration : undefined} onRerunFromMessage={handleBranchFromMessage} />}
+        onStopGeneration={gen ? handleStopGeneration : undefined} onRerunFromMessage={handleBranchFromMessage} onSelectBranch={handleSelectBranch} />}
 
       {tab === "search" && <SearchPanel sq={sq} sResults={sResults} sBusy={sBusy} sDone={sDone} searchFilter={searchFilter} filteredResults={filteredResults} searchScope={searchScope} searchLimit={searchLimit} searchMinScore={searchMinScore} T={T} displayScore={displayScore}
         onSearch={doSearch} onClear={clearSearch} onSqChange={setSq} onFilterChange={setSearchFilter} onScopeChange={setSearchScope} onLimitChange={setSearchLimit} onMinScoreChange={setSearchMinScore} onInspectChunk={openChunkContext} />}
@@ -978,4 +1013,3 @@ function ctxMenuItem(label: string, icon: ReactNode, onClick: () => void, T: any
     </div>
   );
 }
-

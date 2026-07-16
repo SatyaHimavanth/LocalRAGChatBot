@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 
 	llama "github.com/tcpipuk/llama-go"
@@ -28,7 +29,7 @@ type Plan struct {
 
 // Planner decides whether to answer directly or use retrieval.
 type Planner interface {
-	Decide(req Request, persona Persona, tools []ToolSpec) Plan
+	Decide(ctx context.Context, req Request, persona Persona, tools []ToolSpec) (Plan, error)
 }
 
 // HeuristicPlanner provides a model-agnostic baseline planner.
@@ -41,7 +42,7 @@ func NewHeuristicPlanner() *HeuristicPlanner {
 	return &HeuristicPlanner{TopK: 5}
 }
 
-func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
+func (p *HeuristicPlanner) Decide(_ context.Context, req Request, _ Persona, _ []ToolSpec) (Plan, error) {
 	prompt := normalize(req.Prompt)
 	plan := Plan{
 		UseDirect: true,
@@ -50,22 +51,27 @@ func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
 
 	if prompt == "" {
 		plan.Reason = "empty prompt"
-		return plan
+		return plan, nil
 	}
 
-	if looksLikeDocumentQuery(prompt) || (req.HasDocuments && looksLikeFollowUp(prompt)) {
+	if req.HasDocuments && (looksLikeDocumentQuery(prompt) || looksLikeFollowUp(prompt)) {
 		plan.UseRetrieval = true
 		plan.UseDirect = false
 		plan.RetrievalQuery = rewriteQuery(prompt, req.History)
 		plan.Reason = "document or follow-up query"
-		return plan
+		return plan, nil
+	}
+
+	if !req.HasDocuments && looksLikeDocumentQuery(prompt) {
+		plan.Reason = "document query but active collection is empty"
+		return plan, nil
 	}
 
 	if looksLikeGeneralFollowUp(prompt, req.History) || (strings.TrimSpace(req.WorkspaceMemory) != "" && looksLikeFollowUp(prompt)) {
 		plan.UseMemory = true
 		plan.UseDirect = false
 		plan.Reason = "history or workspace memory answerable follow-up"
-		return plan
+		return plan, nil
 	}
 
 	if req.HasDocuments && maybeDocumentRelated(prompt) {
@@ -73,11 +79,11 @@ func (p *HeuristicPlanner) Decide(req Request, _ Persona, _ []ToolSpec) Plan {
 		plan.UseDirect = false
 		plan.RetrievalQuery = rewriteQuery(prompt, req.History)
 		plan.Reason = "possibly document related"
-		return plan
+		return plan, nil
 	}
 
 	plan.Reason = "general conversation"
-	return plan
+	return plan, nil
 }
 
 func normalize(s string) string {
@@ -93,7 +99,7 @@ func looksLikeDocumentQuery(text string) bool {
 		"what does it say", "what does this say", "what did the document say",
 	}
 	for _, p := range patterns {
-		if strings.Contains(text, p) {
+		if containsWord(text, p) {
 			return true
 		}
 	}
@@ -103,11 +109,39 @@ func looksLikeDocumentQuery(text string) bool {
 func looksLikeFollowUp(text string) bool {
 	patterns := []string{"that", "it", "this", "they", "those", "previous", "earlier", "above", "same", "what about", "how about", "and the", "and what", "also", "elaborate", "more detail", "continue"}
 	for _, p := range patterns {
-		if strings.Contains(text, p) {
+		if containsWord(text, p) {
 			return true
 		}
 	}
-	return len(text) < 40
+	return false
+}
+
+// containsWord matches p as a whole word/phrase rather than a raw substring,
+// so e.g. "this" doesn't match inside "enthusiastic" and "it" doesn't match
+// inside "editor".
+func containsWord(text, p string) bool {
+	idx := 0
+	for {
+		i := strings.Index(text[idx:], p)
+		if i < 0 {
+			return false
+		}
+		start := idx + i
+		end := start + len(p)
+		beforeOK := start == 0 || !isWordByte(text[start-1])
+		afterOK := end == len(text) || !isWordByte(text[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		idx = start + 1
+	}
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9')
 }
 
 func looksLikeGeneralFollowUp(text string, history []llama.ChatMessage) bool {
@@ -123,7 +157,7 @@ func looksLikeGeneralFollowUp(text string, history []llama.ChatMessage) bool {
 func maybeDocumentRelated(text string) bool {
 	patterns := []string{"explain", "tell me", "show me", "what is", "what are", "how does", "why did", "compare", "difference", "details"}
 	for _, p := range patterns {
-		if strings.Contains(text, p) {
+		if containsWord(text, p) {
 			return true
 		}
 	}

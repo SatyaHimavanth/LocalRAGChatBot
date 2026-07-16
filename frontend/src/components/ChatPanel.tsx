@@ -6,7 +6,7 @@ import { Markdown } from "./Markdown";
 import { Modal } from "./Modal";
 
 interface ChatPanelProps {
-  activeChat: { id: number; title: string; messages: Message[]; pinned?: boolean; archived?: boolean; messageSources?: Record<number, SourceRef[]> } | undefined;
+  activeChat: { id: number; title: string; messages: Message[]; pinned?: boolean; archived?: boolean; messageSources?: Record<number, SourceRef[]>; branchOptions?: Record<number, number[]> } | undefined;
   isArchived: boolean;
   input: string;
   gen: boolean;
@@ -20,6 +20,7 @@ interface ChatPanelProps {
   onOpenUploadModal: () => void;
   onStopGeneration?: () => void;
   onRerunFromMessage?: (messageId: number, prompt: string) => void;
+  onSelectBranch?: (messageId: number) => void;
 }
 
 export function ChatPanel({
@@ -37,6 +38,7 @@ export function ChatPanel({
   onOpenUploadModal,
   onStopGeneration,
   onRerunFromMessage,
+  onSelectBranch,
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastUserMsgRef = useRef<HTMLDivElement>(null);
@@ -236,6 +238,8 @@ export function ChatPanel({
               const canEdit = m.sender === "user" && !isArchived && numericMsgId > 0 && !!onRerunFromMessage;
               const canRerun = m.sender === "user" && !isArchived && numericMsgId > 0 && !!onRerunFromMessage;
               const canCopy = m.sender === "ai" && numericMsgId > 0;
+              const branches = activeChat.branchOptions?.[numericMsgId] || [];
+              const branchIndex = branches.indexOf(numericMsgId);
               return (
                 <div key={m.id} ref={isLastUser ? lastUserMsgRef : undefined} data-msg-id={numericMsgId} style={{ marginBottom: 16, display: "flex", flexDirection: "column", alignItems: m.sender === "user" ? "flex-end" : "flex-start" }}>
                   <div style={{ fontSize: 11, color: T.text3, marginBottom: 4 }}>{m.sender === "user" ? "You" : "LocalRAG AI"}</div>
@@ -253,6 +257,14 @@ export function ChatPanel({
                         <I.Refresh />
                         <span>Rerun</span>
                       </button>
+                    </div>
+                  )}
+
+                  {m.sender === "user" && branches.length > 1 && branchIndex >= 0 && (
+                    <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, color: T.text3, fontSize: 11 }}>
+                      <button onClick={() => onSelectBranch?.(branches[(branchIndex - 1 + branches.length) % branches.length])} style={messageActionBtnStyle(T)} title="Previous branch" aria-label="Previous branch">‹</button>
+                      <span>{branchIndex + 1}/{branches.length}</span>
+                      <button onClick={() => onSelectBranch?.(branches[(branchIndex + 1) % branches.length])} style={messageActionBtnStyle(T)} title="Next branch" aria-label="Next branch">›</button>
                     </div>
                   )}
 

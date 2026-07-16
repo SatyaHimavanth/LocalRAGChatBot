@@ -251,7 +251,7 @@ export function FileUploadModal({
         if (filename || docId) {
           setFiles(prev => prev.map(f => {
             if ((filename && (f.filename === filename || f.file?.name === filename)) || (docId && f.docId === docId)) {
-              return { ...f, status: "success", progressMsg: "✓ Done", progressPct: 100, docId: docId || f.docId };
+              return { ...f, status: "success", progressMsg: "✓ Done", progressPct: 100, docId: docId || f.docId, duplicateStatus: "clear", duplicateMessage: "" };
             }
             return f;
           }));
@@ -291,7 +291,11 @@ export function FileUploadModal({
       const seen = new Set<string>();
       const next: FileUploadItem[] = [];
 
+      // Jobs restored after a restart are transient queue rows. Remove them as
+      // soon as the backend no longer reports them, otherwise a completed job
+      // remains in this modal as a stale "Ready"/"Done" row.
       for (const item of prev) {
+        if (item.id.startsWith("job-")) continue;
         const key = item.docId ? `doc:${item.docId}` : `file:${normalized(item.filename)}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -323,23 +327,34 @@ export function FileUploadModal({
 
   const handleSelect = (e: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(e.target.files || []) as File[];
-    const items: FileUploadItem[] = selected.map(f => ({
-      id: crypto.randomUUID(),
-      file: f,
-      filename: f.name,
-      status: "pending" as const,
-      progressPct: 0,
-      replace: false,
-      duplicateStatus: "checking",
-    }));
-    setFiles(prev => [...prev, ...items]);
-    void preflightDuplicateCheck(items);
+    const normalized = (name: string) => name.trim().toLowerCase();
+    const existingNames = new Set(files.map(f => normalized(f.filename)));
+    const items: FileUploadItem[] = [];
+    for (const f of selected) {
+      const key = normalized(f.name);
+      if (existingNames.has(key)) continue;
+      existingNames.add(key);
+      items.push({
+        id: crypto.randomUUID(),
+        file: f,
+        filename: f.name,
+        status: "pending" as const,
+        progressPct: 0,
+        replace: false,
+        duplicateStatus: "checking",
+      });
+    }
+    if (items.length > 0) {
+      setFiles(prev => [...prev, ...items]);
+      void preflightDuplicateCheck(items);
+    }
     if (e.target) e.target.value = "";
   };
 
   const uploadAll = async () => {
     const pending = files.filter(f => f.status === "pending" && f.file);
     if (pending.length === 0 || uploading) return;
+    const pendingIds = pending.map(f => f.id);
     setUploading(true);
     setFiles(prev => prev.map(f => f.status === "pending" ? { ...f, status: "processing", progressMsg: "Waiting to stage…", progressPct: 0 } : f));
 
@@ -347,9 +362,13 @@ export function FileUploadModal({
       const result: any = await onStartBatch(pending.map(f => ({ file: f.file!, replace: !!f.replace })));
       const items: any[] = result?.items || result?.Items || [];
       const cancelled = !!(result?.cancelled ?? result?.Cancelled);
+      // Positional match: the backend appends one StageResult per request item,
+      // in request order, so pendingIds[i] <-> items[i]. Matching by filename
+      // instead breaks whenever two rows share a basename.
+      const idToItem = new Map<string, any>(pendingIds.map((id, idx) => [id, items[idx]]));
 
       setFiles(prev => prev.map(f => {
-        const item = items.find((i: any) => (i.filename || i.Filename) === f.filename);
+        const item = idToItem.get(f.id);
         if (!item) {
           if (f.status === "processing") {
             return cancelled
@@ -366,10 +385,10 @@ export function FileUploadModal({
         if (st === "duplicate") return { ...f, status: "duplicate" as const, message: msg, docId, progressMsg: msg, progressPct: 0 };
         if (st === "error") return { ...f, status: "error" as const, message: msg, docId, progressMsg: msg, progressPct: 0 };
         if (cancelled) return { ...f, status: "error" as const, message: "Interrupted — resume from incomplete jobs", docId, progressMsg: "Interrupted", progressPct: f.progressPct || 0 };
-        if (st === "replaced") return { ...f, status: "replaced" as const, docId, progressMsg: "✓ Replaced", progressPct: 100 };
+        if (st === "replaced") return { ...f, status: "replaced" as const, docId, progressMsg: "✓ Replaced", progressPct: 100, duplicateStatus: "clear", duplicateMessage: "" };
 
         if (f.status === "error" || f.status === "failed") return f;
-        return { ...f, status: "success" as const, docId, progressMsg: "✓ Done", progressPct: 100 };
+        return { ...f, status: "success" as const, docId, progressMsg: "✓ Done", progressPct: 100, duplicateStatus: "clear", duplicateMessage: "" };
       }));
     } catch (e: any) {
       const errMsg = e?.message || "Batch ingest failed";
@@ -430,10 +449,9 @@ export function FileUploadModal({
   const B = { background: T.bg2, border: "1px solid " + T.border, color: T.text, fontSize: 13, outline: "none" as const, width: "100%", padding: "10px 14px", borderRadius: 8 };
 
   const handleClose = () => {
-    if (isProcessing) {
-      onClose();
-      return;
-    }
+    // The durable queue is the source of truth after closing this modal. Keep
+    // no in-memory rows, otherwise reopening combines stale local rows with
+    // queue rows and makes the same document appear to be processing twice.
     setFiles([]);
     setUploading(false);
     setPasting(false);

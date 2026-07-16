@@ -80,15 +80,24 @@ func (p Persona) RenderSystemPrompt(plan Plan, tools []ToolSpec, collectionName,
 		b.WriteString(cname)
 	}
 
-	if plan.UseRetrieval {
+	trimmedDoc := strings.TrimSpace(docContext)
+	switch {
+	case plan.UseRetrieval && trimmedDoc != "":
 		b.WriteString("\n\nThe retrieved document context is authoritative for factual claims on this turn. Use it first, prefer it over memory when they conflict, and do not invent APIs, examples, or document details that are not present in the retrieved context.")
-	} else {
+	case plan.UseRetrieval:
+		b.WriteString("\n\nRetrieval was attempted but found nothing relevant. Tell the user plainly that no relevant documents were found, then answer from conversation context or general knowledge if you can, and say which one you're doing.")
+	default:
 		b.WriteString("\n\nNo retrieval is required for this turn unless the conversation clearly needs document context. Answer naturally from conversation context or general knowledge.")
 	}
 
-	if ctx := strings.TrimSpace(docContext); ctx != "" {
+	if trimmedMem := strings.TrimSpace(memoryContext); trimmedMem != "" {
+		b.WriteString("\n\nConversation memory (context that may have scrolled out of the visible history):\n")
+		b.WriteString(trimmedMem)
+	}
+
+	if trimmedDoc != "" {
 		b.WriteString("\n\nDocument Context:\n")
-		b.WriteString(ctx)
+		b.WriteString(trimmedDoc)
 	}
 
 	return strings.TrimSpace(b.String())
