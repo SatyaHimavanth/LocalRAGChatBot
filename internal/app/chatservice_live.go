@@ -118,6 +118,11 @@ type ChatService struct {
 	DB     *sql.DB
 	app    *application.App
 
+	// EmbedModelPath is the resolved embedding model path from main.go's
+	// config, used as a display-name fallback when the engine itself isn't
+	// available to report its own model name.
+	EmbedModelPath string
+
 	// agent drives persona, memory, and retrieval decisions.
 	agent *agent.Agent
 
@@ -298,6 +303,9 @@ func (s *ChatService) defaultCollectionEmbeddingModel() string {
 		if model := strings.TrimSpace(s.Engine.EmbeddingModelName()); model != "" {
 			return model
 		}
+	}
+	if path := strings.TrimSpace(s.EmbedModelPath); path != "" {
+		return filepath.Base(path)
 	}
 	if env := strings.TrimSpace(os.Getenv("EMBED_MODEL_PATH")); env != "" {
 		return filepath.Base(env)

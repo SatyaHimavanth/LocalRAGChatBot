@@ -15,8 +15,9 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// Open creates/opens the SQLite DB at a stable OS-appropriate location
-// so data survives rebuilds and binary relocations.
+// Open creates/opens the SQLite DB at dbFileName. Pass an already-resolved
+// path (e.g. next to the executable) to use it as-is, or a bare filename to
+// fall back to a stable OS-appropriate location - see getDBPath.
 func Open(dbFileName string) (*sql.DB, error) {
 	sqlite_vec.Auto()
 
@@ -42,10 +43,24 @@ func Open(dbFileName string) (*sql.DB, error) {
 	return db, nil
 }
 
-// getDBPath returns a stable path for the database file.
+// getDBPath returns the path to use for the database file.
+//
+// If dbFileName already has a directory component (main.go now passes an
+// executable-relative path, e.g. "<exe dir>/data/ragapp.db"), it's used
+// as-is - that's what puts the db next to the .exe instead of in the OS
+// user-data folder.
+//
+// If dbFileName is just a bare name with no directory (e.g. "ragapp.db"),
+// falls back to the previous stable OS-appropriate location, so any
+// existing caller that only ever passed a filename keeps working exactly
+// as before:
 // Windows: %AppData%/LocalRAGChatBot/data/ragapp.db
 // Linux/Mac: ~/.local/share/LocalRAGChatBot/data/ragapp.db
 func getDBPath(dbFileName string) (string, error) {
+	if dir := filepath.Dir(dbFileName); dir != "." && dir != string(filepath.Separator) {
+		return dbFileName, nil
+	}
+
 	var base string
 
 	switch runtime.GOOS {
