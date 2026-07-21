@@ -10,7 +10,6 @@ export type {
     Document,
     DuplicateMatch,
     EventLogEntry,
-    ExtensionHook,
     IngestionJob,
     IngestionLog,
     SourceChunkRef

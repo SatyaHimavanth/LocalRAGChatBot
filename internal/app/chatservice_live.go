@@ -146,9 +146,6 @@ func (s *ChatService) ServiceStartup(ctx context.Context, options application.Se
 		agent.WithPlanner(agent.NewHeuristicPlanner()),
 	)
 	s.CleanupIncompleteOnStartup()
-	if s.DB != nil {
-		_ = store.EnsureDefaultExtensionHooks(s.DB)
-	}
 	return nil
 }
 
@@ -204,38 +201,6 @@ func (s *ChatService) UpdateCollectionProfile(collectionID int64, embeddingModel
 		return err
 	}
 	s.recordEvent("collection:update_profile", "Collection profile updated", fmt.Sprintf("Collection %d · %s · %d dims · %s", collectionID, strings.TrimSpace(embeddingModel), embeddingDims, vectorBackend), "info", "collections", collectionID, 0, 0, "")
-	return nil
-}
-
-// GetExtensionHooks returns the future integration hook registry.
-func (s *ChatService) GetExtensionHooks() ([]store.ExtensionHook, error) {
-	if s.DB == nil {
-		return nil, fmt.Errorf("database not initialized")
-	}
-	return store.GetExtensionHooks(s.DB)
-}
-
-// UpdateExtensionHook persists hook enablement/configuration changes.
-func (s *ChatService) UpdateExtensionHook(hookKey string, enabled bool, configJSON string, state string) error {
-	if s.DB == nil {
-		return fmt.Errorf("database not initialized")
-	}
-	if err := store.UpdateExtensionHook(s.DB, hookKey, enabled, configJSON, state); err != nil {
-		return err
-	}
-	s.recordEvent("extension:update", "Extension hook updated", fmt.Sprintf("%s · enabled=%t · state=%s", hookKey, enabled, state), "info", "extensions", 0, 0, 0, "")
-	return nil
-}
-
-// ResetExtensionHooks restores the canonical phase-8 hook descriptors.
-func (s *ChatService) ResetExtensionHooks() error {
-	if s.DB == nil {
-		return fmt.Errorf("database not initialized")
-	}
-	if err := store.ResetExtensionHooks(s.DB); err != nil {
-		return err
-	}
-	s.recordEvent("extension:reset", "Extension hooks reset", "Default phase-8 hook descriptors restored", "info", "extensions", 0, 0, 0, "")
 	return nil
 }
 

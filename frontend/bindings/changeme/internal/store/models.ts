@@ -114,26 +114,6 @@ export interface EventLogEntry {
     "createdAt": number;
 }
 
-/**
- * ExtensionHook describes one future integration surface (GraphRAG, SQL Agent,
- * MCP, OCR, etc.). The table is intentionally small and generic so new hook
- * points can be added without schema churn.
- */
-export interface ExtensionHook {
-    "id": number;
-    "hookKey": string;
-    "name": string;
-    "hookType": string;
-    "surface": string;
-    "description": string;
-    "state": string;
-    "enabled": boolean;
-    "configJson": string;
-    "lastRunAt": number;
-    "createdAt": number;
-    "updatedAt": number;
-}
-
 export interface IngestionJob {
     "id": number;
     "batchId": string;

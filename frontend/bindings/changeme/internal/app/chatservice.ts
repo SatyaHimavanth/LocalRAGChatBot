@@ -138,13 +138,6 @@ export function GetEventLogs(limit: number): $CancellablePromise<store$0.EventLo
 }
 
 /**
- * GetExtensionHooks returns the future integration hook registry.
- */
-export function GetExtensionHooks(): $CancellablePromise<store$0.ExtensionHook[] | null> {
-    return $Call.ByID(1131875631);
-}
-
-/**
  * GetIncompleteJobs returns non-ready documents for resume/discard UI.
  */
 export function GetIncompleteJobs(): $CancellablePromise<$models.IngestJob[] | null> {
@@ -219,13 +212,6 @@ export function PinChat(sessionID: number): $CancellablePromise<void> {
 }
 
 /**
- * ResetExtensionHooks restores the canonical phase-8 hook descriptors.
- */
-export function ResetExtensionHooks(): $CancellablePromise<void> {
-    return $Call.ByID(1180382636);
-}
-
-/**
  * ResumeIngest continues embedding for all resumable incomplete documents.
  */
 export function ResumeIngest(): $CancellablePromise<$models.IngestBatchResult | null> {
@@ -294,13 +280,6 @@ export function UpdateChatTitle(sessionID: number, title: string): $CancellableP
  */
 export function UpdateCollectionProfile(collectionID: number, embeddingModel: string, embeddingDims: number, vectorBackend: string): $CancellablePromise<void> {
     return $Call.ByID(3626765774, collectionID, embeddingModel, embeddingDims, vectorBackend);
-}
-
-/**
- * UpdateExtensionHook persists hook enablement/configuration changes.
- */
-export function UpdateExtensionHook(hookKey: string, enabled: boolean, configJSON: string, state: string): $CancellablePromise<void> {
-    return $Call.ByID(3504221177, hookKey, enabled, configJSON, state);
 }
 
 /**

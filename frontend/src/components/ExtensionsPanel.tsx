@@ -57,7 +57,7 @@ const switchKnob = (enabled: boolean): CSSProperties => ({
   background: enabled ? "rgba(99,102,241,0.95)" : "rgba(255,255,255,0.72)",
 });
 
-export function ExtensionsPanel({ hooks, loading, T, onRefresh, onSaveHook, onResetHooks }: ExtensionsPanelProps) {
+export function LegacyExtensionsPanel({ hooks, loading, T, onRefresh, onSaveHook, onResetHooks }: ExtensionsPanelProps) {
   const [drafts, setDrafts] = useState<DraftMap>({});
 
   useEffect(() => {
@@ -244,4 +244,28 @@ function statusFg(state: string) {
   if (key === "ready" || key === "enabled") return "rgba(34,197,94,0.95)";
   if (key === "partial" || key === "preview") return "rgba(245,158,11,0.95)";
   return "rgba(148,163,184,0.95)";
+}
+
+// The previous registry was a set of placeholders. Keep this surface honest
+// until an extension can be installed and used locally end to end.
+export function ExtensionsPanel({ T }: { T: ThemeVars }) {
+  return (
+    <div style={{ flex: 1, minWidth: 0, padding: 20, display: "flex", flexDirection: "column" }}>
+      <div>
+        <div style={{ fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+          <I.Bolt /> Extensions
+        </div>
+        <div style={{ fontSize: 12, color: T.text3, marginTop: 4 }}>
+          Local integrations will be available here when they are ready to install and use.
+        </div>
+      </div>
+      <div style={{ flex: 1, minHeight: 260, marginTop: 16, border: "1px solid " + T.border, borderRadius: 14, background: T.bg2, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 28 }}>
+        <div style={{ width: 48, height: 48, display: "grid", placeItems: "center", borderRadius: 14, color: "rgba(129,140,248,0.95)", background: "rgba(99,102,241,0.12)" }}><I.Bolt /></div>
+        <div style={{ marginTop: 16, fontSize: 16, fontWeight: 650 }}>Coming soon</div>
+        <p style={{ maxWidth: 440, margin: "8px 0 0", textAlign: "center", color: T.text3, fontSize: 13, lineHeight: 1.6 }}>
+          OCR, MCP, GraphRAG, and SQL tooling require dedicated local runtimes. They will be added only when they work end to end in the desktop app.
+        </p>
+      </div>
+    </div>
+  );
 }

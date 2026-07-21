@@ -4,11 +4,11 @@ package store
 import (
 	"database/sql"
 	"embed"
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
-	"fmt"
-	"log"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
@@ -119,7 +119,6 @@ func initializeSchema(db *sql.DB) error {
 		"0003_vec.sql",
 		"0004_ingestion_queue.sql",
 		"0005_workspace_memory.sql",
-		"0006_extension_hooks.sql",
 		"0007_event_log.sql",
 	}
 

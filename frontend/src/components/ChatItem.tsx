@@ -5,12 +5,13 @@ import { I } from "./Icons";
 interface ChatItemProps {
   chat: Chat;
   isActive: boolean;
+  isGenerating: boolean;
   T: ThemeVars;
   onSelect: () => void;
   onCtx: (x: number, y: number) => void;
 }
 
-export const ChatItem: React.FC<ChatItemProps> = ({ chat, isActive, T, onSelect, onCtx }) => {
+export const ChatItem: React.FC<ChatItemProps> = ({ chat, isActive, isGenerating, T, onSelect, onCtx }) => {
   const [h, setH] = useState(false);
   return (
     <div
@@ -45,6 +46,7 @@ export const ChatItem: React.FC<ChatItemProps> = ({ chat, isActive, T, onSelect,
         {chat.pinned && "📌"}
         {chat.title}
       </div>
+      {isGenerating && <span title="Generating response" aria-label="Generating response" style={{ color: "rgba(99,102,241,0.9)", fontWeight: 700, letterSpacing: 1, padding: "0 4px", flexShrink: 0 }}>...</span>}
       {h && (
         <button
           onClick={(e) => {

@@ -5,14 +5,14 @@ import { ChatItem } from "./ChatItem";
 
 interface SidebarProps {
   chats: Chat[]; activeChatId: number; tab: string; sidebarOpen: boolean;
-  isIngesting: boolean; theme: Theme;
+  isIngesting: boolean; generatingChatIds: ReadonlySet<number>; theme: Theme;
   onNewChat: () => void; onSelectChat: (id: number) => void;
   onTabChange: (tab: "chat"|"search"|"cols"|"diag"|"ext") => void;
   onToggleSidebar: () => void;
   onCtxMenu: (chatId: number, x: number, y: number) => void;
 }
 
-export function Sidebar({chats,activeChatId,tab,sidebarOpen,isIngesting,theme,onNewChat,onSelectChat,onTabChange,onToggleSidebar,onCtxMenu}:SidebarProps){
+export function Sidebar({chats,activeChatId,tab,sidebarOpen,isIngesting,generatingChatIds,theme,onNewChat,onSelectChat,onTabChange,onToggleSidebar,onCtxMenu}:SidebarProps){
   const T=themeVars[theme];
   const now=Date.now(),day=86400000;
   const pinnedChats=chats.filter(c=>c.pinned&&!c.archived);
@@ -47,24 +47,24 @@ export function Sidebar({chats,activeChatId,tab,sidebarOpen,isIngesting,theme,on
       </div>
       <div style={{flex:1,overflowY:"auto",paddingTop:8}}>
         <div style={{fontSize:11,color:T.text3,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:8,paddingLeft:12,whiteSpace:"nowrap"}}>Chat History</div>
-        <Group title="📌 Pinned" list={pinnedChats} T={T} activeChatId={activeChatId} onSelect={onSelectChat} onCtx={onCtxMenu}/>
-        <Group title="Today" list={unpinned.filter(c=>now-c.createdAt<day)} T={T} activeChatId={activeChatId} onSelect={onSelectChat} onCtx={onCtxMenu}/>
-        <Group title="Yesterday" list={unpinned.filter(c=>now-c.createdAt>=day&&now-c.createdAt<2*day)} T={T} activeChatId={activeChatId} onSelect={onSelectChat} onCtx={onCtxMenu}/>
-        <Group title="Older" list={unpinned.filter(c=>now-c.createdAt>=2*day)} T={T} activeChatId={activeChatId} onSelect={onSelectChat} onCtx={onCtxMenu}/>
-        {archivedChats.length>0&&<Group title="📦 Archived" list={archivedChats} T={T} activeChatId={activeChatId} onSelect={onSelectChat} onCtx={onCtxMenu}/>}
+        <Group title="📌 Pinned" list={pinnedChats} T={T} activeChatId={activeChatId} generatingChatIds={generatingChatIds} onSelect={onSelectChat} onCtx={onCtxMenu}/>
+        <Group title="Today" list={unpinned.filter(c=>now-c.createdAt<day)} T={T} activeChatId={activeChatId} generatingChatIds={generatingChatIds} onSelect={onSelectChat} onCtx={onCtxMenu}/>
+        <Group title="Yesterday" list={unpinned.filter(c=>now-c.createdAt>=day&&now-c.createdAt<2*day)} T={T} activeChatId={activeChatId} generatingChatIds={generatingChatIds} onSelect={onSelectChat} onCtx={onCtxMenu}/>
+        <Group title="Older" list={unpinned.filter(c=>now-c.createdAt>=2*day)} T={T} activeChatId={activeChatId} generatingChatIds={generatingChatIds} onSelect={onSelectChat} onCtx={onCtxMenu}/>
+        {archivedChats.length>0&&<Group title="📦 Archived" list={archivedChats} T={T} activeChatId={activeChatId} generatingChatIds={generatingChatIds} onSelect={onSelectChat} onCtx={onCtxMenu}/>} 
         {chats.length===0&&<div style={{fontSize:12,color:T.text3,padding:20,textAlign:"center",whiteSpace:"nowrap"}}>No chats yet.</div>}
       </div>
     </div>
   );
 }
 
-function Group({title,list,T,activeChatId,onSelect,onCtx}:{title:string;list:Chat[];T:ThemeVars;activeChatId:number;onSelect:(id:number)=>void;onCtx:(id:number,x:number,y:number)=>void}){
+function Group({title,list,T,activeChatId,generatingChatIds,onSelect,onCtx}:{title:string;list:Chat[];T:ThemeVars;activeChatId:number;generatingChatIds:ReadonlySet<number>;onSelect:(id:number)=>void;onCtx:(id:number,x:number,y:number)=>void}){
   if(list.length===0)return null;
   return(
     <div style={{marginBottom:16}}>
       <div style={{fontSize:11,color:T.text3,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:8,paddingLeft:12}}>{title}</div>
       {list.map(c=>(
-        <ChatItem key={c.id} chat={c} isActive={c.id===activeChatId} T={T} onSelect={()=>onSelect(c.id)} onCtx={(x,y)=>onCtx(c.id,x,y)}/>
+        <ChatItem key={c.id} chat={c} isActive={c.id===activeChatId} isGenerating={generatingChatIds.has(c.id)} T={T} onSelect={()=>onSelect(c.id)} onCtx={(x,y)=>onCtx(c.id,x,y)}/>
       ))}
     </div>
   );

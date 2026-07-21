@@ -7,11 +7,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	appsvc "changeme/internal/app"
+	"changeme/internal/diagnostic"
 	"changeme/internal/engine"
 	"changeme/internal/store"
 
@@ -111,8 +113,16 @@ func loadConfig() AppConfig {
 }
 
 func main() {
-	log.Printf("=== LocalRAGChatBot starting (pid %d) ===", os.Getpid())
 	cfg := loadConfig()
+	closeLogs := diagnostic.Configure(cfg.BaseDir)
+	defer closeLogs()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("[panic] unrecovered panic: %v\n%s", recovered, debug.Stack())
+			panic(recovered)
+		}
+	}()
+	log.Printf("=== LocalRAGChatBot starting (pid %d) ===", os.Getpid())
 
 	log.Printf("Resolved chatModelPath: %s", cfg.ChatModelPath)
 	log.Printf("Resolved embedModelPath: %s", cfg.EmbedModelPath)

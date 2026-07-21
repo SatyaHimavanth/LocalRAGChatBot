@@ -1,8 +1,8 @@
 ﻿import { useState, useEffect, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { Events } from "@wailsio/runtime";
-import { SendMessage, IngestFile, CreateCollection, UpdateCollectionProfile, GetCollections, CreateChat, GetChats, GetChatMessages, GetChatBranchOptions, SelectChatBranch, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, GetEventLogs, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, SearchMetadata, SearchWorkspace, GetDocumentContent, GetDocumentChunks, GetSessionSources, GetChunkContext, CancelGeneration, CancelIngest, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete, GetExtensionHooks, UpdateExtensionHook, ResetExtensionHooks } from "../bindings/changeme/internal/app/chatservice";
-import { Message, Chat, Collection, DocRecord, SearchResult, SearchScope, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob, IngestLogEntry, EventLogEntry, AgentPlan, AgentResult, ChunkRecord, ExtensionHook } from "./types";
+import { SendMessage, IngestFile, CreateCollection, UpdateCollectionProfile, GetCollections, CreateChat, GetChats, GetChatMessages, GetChatBranchOptions, SelectChatBranch, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, GetEventLogs, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, SearchMetadata, SearchWorkspace, GetDocumentContent, GetDocumentChunks, GetSessionSources, GetChunkContext, CancelGeneration, CancelIngest, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete } from "../bindings/changeme/internal/app/chatservice";
+import { Message, Chat, Collection, DocRecord, SearchResult, SearchScope, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob, IngestLogEntry, EventLogEntry, AgentPlan, AgentResult, ChunkRecord } from "./types";
 import { I } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
@@ -73,16 +73,23 @@ const parseStoredAgentResult = (raw: any): AgentResult | undefined => {
 
 const encodeBranchPrompt = (parentMessageId: number, prompt: string) => `[[branch-parent:${parentMessageId}]]\n${prompt}`;
 
+const initialTheme = (): Theme =>
+  typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+
 
 export default function App() {
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [theme, setTheme] = useState<Theme>(initialTheme);
   const [tab, setTab] = useState<"chat"|"search"|"cols"|"diag"|"ext">("chat");
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState(0);
   const [input, setInput] = useState("");
-  const [gen, setGen] = useState(false);
-  const [statusMsgs, setStatusMsgs] = useState<Message[]>([]);
+  const [generatingChatIds, setGeneratingChatIds] = useState<Set<number>>(() => new Set());
+  const [statusMsgsByChat, setStatusMsgsByChat] = useState<Record<number, Message[]>>({});
   const activeChat=chats.find(c=>c.id===activeChatId);
+  const gen = generatingChatIds.has(activeChatId);
+  const statusMsgs = statusMsgsByChat[activeChatId] || [];
   const isArchived=activeChat?.archived===true;
   const createdInitialChat = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -122,8 +129,6 @@ export default function App() {
   const [incompleteJobs,setIncompleteJobs]=useState<IncompleteJob[]>([]);
   const [ingestLogs,setIngestLogs]=useState<IngestLogEntry[]>([]);
   const [eventLogs,setEventLogs]=useState<EventLogEntry[]>([]);
-  const [extensionHooks,setExtensionHooks]=useState<ExtensionHook[]>([]);
-  const [extensionsBusy,setExtensionsBusy]=useState(false);
   const closeUploadModal = () => { setShowUploadModal(false); loadCols(); loadDocs(activeColId); loadIncompleteJobs(); };
   const [showResumeModal, setShowResumeModal] = useState(false);
 
@@ -181,33 +186,6 @@ export default function App() {
     }
   }, []);
 
-  const loadExtensions = useCallback(async () => {
-    try {
-      setExtensionsBusy(true);
-      const rows: any = await GetExtensionHooks();
-      const mapped = (rows || []).map((x: any) => ({
-        id: Number(x.id ?? x.ID ?? 0),
-        hookKey: String(x.hookKey ?? x.HookKey ?? ""),
-        name: String(x.name ?? x.Name ?? ""),
-        hookType: String(x.hookType ?? x.HookType ?? ""),
-        surface: String(x.surface ?? x.Surface ?? ""),
-        description: String(x.description ?? x.Description ?? ""),
-        state: String(x.state ?? x.State ?? "planned"),
-        enabled: x.enabled === true || x.Enabled === true,
-        configJson: String(x.configJson ?? x.ConfigJSON ?? "{}"),
-        lastRunAt: Number(x.lastRunAt ?? x.LastRunAt ?? 0),
-        createdAt: Number(x.createdAt ?? x.CreatedAt ?? 0),
-        updatedAt: Number(x.updatedAt ?? x.UpdatedAt ?? 0),
-      })) as ExtensionHook[];
-      setExtensionHooks(mapped);
-    } catch (e) {
-      console.error("Failed to load extension hooks:", e);
-      setExtensionHooks([]);
-    } finally {
-      setExtensionsBusy(false);
-    }
-  }, []);
-
   const [confirm,setConfirm]=useState<{open:boolean;title:string;message:string;detail:string;confirmLabel:string;onConfirm:()=>void}>({open:false,title:"",message:"",detail:"",confirmLabel:"Delete",onConfirm:()=>{}});
   const [renameModal,setRenameModal]=useState<{open:boolean;chatId:number;value:string}>({open:false,chatId:0,value:""});
   const [ctxMenuChatId,setCtxMenuChatId]=useState<number|null>(null);
@@ -220,13 +198,14 @@ export default function App() {
 
   useEffect(()=>{const h=(e:MouseEvent)=>{if(ctxRef.current&&!ctxRef.current.contains(e.target as Node))setCtxMenuChatId(null)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
   useEffect(()=>{const h=(e:MouseEvent)=>{if(colDropdownRef.current&&!colDropdownRef.current.contains(e.target as Node))setColDropdownOpen(false)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
-  useEffect(()=>{(async ()=>{ await loadCols(); await loadChats(); await loadExtensions(); await loadEventLogs(); const list = await loadIncompleteJobs(); if (list && list.length > 0) setShowResumeModal(true); })();},[]);
+  useEffect(()=>{(async ()=>{ await loadCols(); await loadChats(); await loadEventLogs(); const list = await loadIncompleteJobs(); if (list && list.length > 0) setShowResumeModal(true); })();},[]);
 
 
 useEffect(()=>{
   const offT = Events.On("chat:token", (e:any) => {
-    setStatusMsgs([]);
-    const sid = e.data.sessionId;
+    const sid = Number(e?.data?.sessionId ?? 0);
+    if (!sid) return;
+    setStatusMsgsByChat(p => ({ ...p, [sid]: [] }));
     setChats(p => p.map(c => {
       if (c.id !== sid) return c;
       const ms = [...c.messages];
@@ -258,21 +237,25 @@ useEffect(()=>{
   });
 
   const offPlan = Events.On("chat:plan", (e:any) => {
-    const sid = e?.data?.sessionId;
+    const sid = Number(e?.data?.sessionId ?? 0);
     if (!sid) return;
     const plan = buildAgentPlan(e.data);
-    setStatusMsgs([{ id: crypto.randomUUID(), sender: "system", text: summarizePlan(plan) }]);
+    setStatusMsgsByChat(p => ({ ...p, [sid]: [{ id: crypto.randomUUID(), sender: "system", text: summarizePlan(plan) }] }));
     setChats(p => p.map(c => c.id === sid ? { ...c, agentPlan: plan } : c));
   });
 
   const offD = Events.On("chat:done", (e:any) => {
-    setGen(false);
-    setStatusMsgs([]);
-    const sid = e?.data?.sessionId;
+    const sid = Number(e?.data?.sessionId ?? 0);
+    if (!sid) return;
+    setGeneratingChatIds(p => {
+      const next = new Set(p);
+      next.delete(sid);
+      return next;
+    });
+    setStatusMsgsByChat(p => ({ ...p, [sid]: [] }));
     const backendMsgId = e?.data?.msgId;
     const wasCancelled = e?.data?.cancelled === true;
     const agentResult = buildAgentResult(e?.data);
-    if (!sid) return;
 
     // Cancelled with msgId == -1 means no message was saved yet — add a placeholder
     if (wasCancelled && backendMsgId === -1) {
@@ -330,7 +313,11 @@ useEffect(()=>{
     }
   });
 
-  const offStatus = Events.On("chat:status", (e:any) => { setStatusMsgs([{ id: crypto.randomUUID(), sender: "system", text: e.data.label }]); });
+  const offStatus = Events.On("chat:status", (e:any) => {
+    const sid = Number(e?.data?.sessionId ?? 0);
+    if (!sid) return;
+    setStatusMsgsByChat(p => ({ ...p, [sid]: [{ id: crypto.randomUUID(), sender: "system", text: String(e?.data?.label || "Thinking...") }] }));
+  });
   const offSources = Events.On("chat:sources", (e:any) => {
     const sid = e.data.sessionId;
     const msgId = e.data.msgId;
@@ -420,7 +407,6 @@ useEffect(()=>{
     errorMessage:String(x.errorMessage||""),updatedAt:Number(x.updatedAt||0),
   })))}catch(e){setIdocs([])}};
   useEffect(()=>{if(tab==="cols"){loadDocs(activeColId);setSelectedDocId(null);setSelectedDocContent("");setSelectedDocChunks([])}},[activeColId,tab]);
-  useEffect(()=>{if(tab==="ext"){void loadExtensions();}},[tab, loadExtensions]);
 
   const loadChats = async () => {
     try {
@@ -481,7 +467,7 @@ useEffect(()=>{
           });
         }
         setChats(loaded);
-        if (loaded.length && !activeChatId) setActiveChatId(loaded[0].id);
+        setActiveChatId(currentId => loaded.some(chat => chat.id === currentId) ? currentId : loaded[0].id);
       } else if (!createdInitialChat.current) {
         createdInitialChat.current = true;
         newChat();
@@ -514,8 +500,8 @@ useEffect(()=>{
     const msg = prompt;
     const tempId = crypto.randomUUID();
     setInput("");
-    setGen(true);
-    setStatusMsgs([{ id: crypto.randomUUID(), sender: "system", text: "Thinking..." }]);
+    setGeneratingChatIds(p => new Set(p).add(tid));
+    setStatusMsgsByChat(p => ({ ...p, [tid]: [{ id: crypto.randomUUID(), sender: "system", text: "Thinking..." }] }));
 
     const oldChat = chats.find((c) => c.id === tid);
     const shouldRename = options?.renameChat !== false && !options?.parentMessageId;
@@ -551,8 +537,12 @@ useEffect(()=>{
       await SendMessage(tid, activeColId, promptForBackend);
     } catch (e) {
       console.error(e);
-      setGen(false);
-      setStatusMsgs([]);
+      setGeneratingChatIds(p => {
+        const next = new Set(p);
+        next.delete(tid);
+        return next;
+      });
+      setStatusMsgsByChat(p => ({ ...p, [tid]: [] }));
       setChats((p) => p.map((c) => {
         if (c.id !== tid) return c;
         const ms = [...c.messages];
@@ -785,26 +775,6 @@ useEffect(()=>{
     }
   };
 
-  const saveExtensionHook = async (hookKey: string, enabled: boolean, configJson: string, state: string) => {
-    try {
-      await UpdateExtensionHook(hookKey, enabled, configJson, state);
-      await loadExtensions();
-      addToast("success", `${hookKey} updated`);
-    } catch (e) {
-      addToast("error", getErrMsg(e));
-    }
-  };
-
-  const resetExtensionHooks = async () => {
-    try {
-      await ResetExtensionHooks();
-      await loadExtensions();
-      addToast("success", "Extension hooks reset");
-    } catch (e) {
-      addToast("error", getErrMsg(e));
-    }
-  };
-
   const doSearch = async () => { if (!sq.trim()) return; setSBusy(true); setSDone(true); try { let r: any = []; const limit = Math.max(1, Math.min(searchLimit || 20, 50)); if (searchScope === "metadata") { r = await SearchMetadata(sq, activeColId > 0 ? activeColId : 0, limit); } else if (searchScope === "workspace") { r = await SearchWorkspace(sq, activeColId > 0 ? activeColId : 0, activeChatId || 0, limit); } else if (searchScope === "all") { r = await Search(sq, 0, limit); } else { r = await Search(sq, activeColId > 0 ? activeColId : 0, limit); } setSResults(r || []); } catch (e) { console.error(e); setSResults([]); } setSBusy(false); };
   const clearSearch = () => { setSq(""); setSResults([]); setSDone(false); setSearchFilter("all"); setSearchScope("collection"); setSearchLimit(20); setSearchMinScore(0); };
   const displayScore = (score: number) => Math.max(0, Math.min(score * 100, 100)).toFixed(1);
@@ -837,7 +807,7 @@ useEffect(()=>{
   return (<>
     <style>{globalCSS(theme)}</style>
     <div style={{ display: "flex", height: "100vh", width: "100vw", background: T.bg, color: T.text, transition: "background 0.3s,color 0.3s" }}>
-      <Sidebar chats={chats} activeChatId={activeChatId} tab={tab} sidebarOpen={sidebarOpen} isIngesting={isIngesting} theme={theme}
+      <Sidebar chats={chats} activeChatId={activeChatId} tab={tab} sidebarOpen={sidebarOpen} isIngesting={isIngesting} generatingChatIds={generatingChatIds} theme={theme}
         onNewChat={newChat} onSelectChat={(id) => { setActiveChatId(id); setTab("chat"); }}
         onTabChange={setTab} onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
         onCtxMenu={(id, x, y) => { setCtxMenuChatId(id); setCtxMenuPos({ x, y }); }} />
@@ -884,14 +854,7 @@ useEffect(()=>{
         onDiscardQueue={handleDiscardAllJobs}
       />}
 
-      {tab === "ext" && <ExtensionsPanel
-        hooks={extensionHooks}
-        loading={extensionsBusy}
-        T={T}
-        onRefresh={() => { void loadExtensions(); }}
-        onSaveHook={saveExtensionHook}
-        onResetHooks={resetExtensionHooks}
-      />}
+      {tab === "ext" && <ExtensionsPanel T={T} />}
 
       {/* Context Menu */}
       {ctxMenuChatId !== null && (() => { const chat = chats.find(c => c.id === ctxMenuChatId); if (!chat) return null; const a = chat.archived; return (
