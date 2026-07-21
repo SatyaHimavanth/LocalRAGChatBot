@@ -113,9 +113,7 @@ To launch the project in live-development mode (with hot-reloading for both Go a
 :: 1. Force CGO on
 set CGO_ENABLED=1
 
-:: 2. Point Go's persistent environment configuration to MSYS2's MINGW64 toolchain
-go env -w CC=C:\msys64\mingw64\bin\gcc.exe
-go env -w CXX=C:\msys64\mingw64\bin\g++.exe
+:: 2. Point Go's CGO compiler at MSYS2's GCC (resolved via PATH - see step 4)
 go env -w CC=gcc
 go env -w CXX=g++
 go env -w GOFLAGS="-tags=fts5,libsqlite3"
@@ -137,6 +135,25 @@ set EMBED_MODEL_PATH=<>\LocalRAGChatBot\models\embed\embed-model.gguf
 :: 7. Launch development build
 wails3 dev
 ```
+
+---
+
+## 📦 Building for Production
+
+`wails3 build` does **not** pick up the `GOFLAGS` you set in Step 3 above.
+`wails3 build`/`wails3 package` only forward one build-time flag - `--tags` -
+which becomes the `EXTRA_TAGS` variable the underlying Taskfile passes to
+`go build`. `GOFLAGS` only affects bare `go build`/`go run` invocations, not
+whatever tags Wails' own Taskfile constructs, so `fts5,libsqlite3` never
+reaches the compiler unless you pass it explicitly:
+
+```cmd
+wails3 build --tags fts5,libsqlite3
+```
+
+(same for `wails3 package` if you use it to produce the distributable).
+Skipping this compiles a binary that silently can't create the FTS5 search
+table - see Troubleshooting below for what that looks like.
 
 ---
 

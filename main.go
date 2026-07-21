@@ -111,6 +111,7 @@ func loadConfig() AppConfig {
 }
 
 func main() {
+	log.Printf("=== LocalRAGChatBot starting (pid %d) ===", os.Getpid())
 	cfg := loadConfig()
 
 	log.Printf("Resolved chatModelPath: %s", cfg.ChatModelPath)
@@ -217,6 +218,8 @@ func main() {
 
 	appErr := app.Run()
 	if appErr != nil {
+		log.Printf("=== LocalRAGChatBot exiting with error: %v ===", appErr)
 		log.Fatal(appErr)
 	}
+	log.Printf("=== LocalRAGChatBot exited cleanly ===")
 }

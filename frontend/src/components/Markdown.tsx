@@ -1,5 +1,3 @@
-
-
 interface MarkdownProps {
   text: string;
   className?: string;
@@ -18,12 +16,13 @@ export function Markdown({text, className, hasPreformattedHtml}: MarkdownProps) 
   );
 }
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // Renders markdown while preserving existing HTML tags (for source badges)
@@ -69,8 +68,13 @@ function applyMarkdownFormatting(html: string): string {
   // Strikethrough
   html = html.replace(/~~(.+?)~~/g, "<del>$1</del>");
 
-  // Links
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:rgba(99,102,241,0.85);text-decoration:underline">$1</a>');
+  // Links - only allow http(s)/mailto so a javascript: or data: URL in the
+  // text (from a document, or a response influenced by one) can't execute
+  // when clicked; anything else renders as plain text instead of a link.
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, url) => {
+    if (!/^(https?:|mailto:)/i.test(url.trim())) return m;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:rgba(99,102,241,0.85);text-decoration:underline">${label}</a>`;
+  });
 
   // Unordered lists
   html = html.replace(/^[\s]*[-*]\s+(.+)$/gm, "<li>$1</li>");

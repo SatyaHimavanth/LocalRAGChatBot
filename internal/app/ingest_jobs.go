@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -306,6 +308,9 @@ func (s *ChatService) StartIngestBatch(collectionID int64, files []IngestFilePay
 	rt.mu.Unlock()
 
 	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[ingest] PANIC recovered in StartIngestBatch (collection %d): %v\n%s", collectionID, r, debug.Stack())
+		}
 		cancel()
 		rt.mu.Lock()
 		rt.active = false
@@ -424,6 +429,9 @@ func (s *ChatService) processQueue(batchID string) (*IngestBatchResult, error) {
 	rt.mu.Unlock()
 
 	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[ingest] PANIC recovered in processQueue (batch %q): %v\n%s", batchID, r, debug.Stack())
+		}
 		cancel()
 		rt.mu.Lock()
 		rt.active = false
@@ -467,10 +475,12 @@ func (s *ChatService) stageOne(f IngestFilePayload, collectionID int64, batchID 
 
 	loaded, err := s.extractDocument(f, filename)
 	if err != nil {
+		log.Printf("[ingest] stage %q failed: %v", filename, err)
 		return StageResult{Filename: filename, Status: "error", Message: err.Error()}
 	}
 	text := strings.TrimSpace(loaded.Text)
 	if text == "" {
+		log.Printf("[ingest] stage %q: no extractable text found", filename)
 		return StageResult{Filename: filename, Status: "error", Message: "No extractable text found"}
 	}
 
@@ -542,12 +552,22 @@ func (s *ChatService) stageOne(f IngestFilePayload, collectionID int64, batchID 
 	return StageResult{Filename: filename, Status: "staged", Message: "Queued for embedding", DocID: docID}
 }
 
+const maxUploadBytes = 200 * 1024 * 1024 // 200MB decoded; nothing bounded this before
+
 func (s *ChatService) extractDocument(f IngestFilePayload, filename string) (ingest.LoadedDocument, error) {
 	if strings.TrimSpace(f.TextContent) != "" {
+		if len(f.TextContent) > maxUploadBytes {
+			return ingest.LoadedDocument{}, fmt.Errorf("text content too large (%d bytes, max %d)", len(f.TextContent), maxUploadBytes)
+		}
 		return ingest.LoadDocumentBytes([]byte(f.TextContent), filename)
 	}
 	if strings.TrimSpace(f.Base64Data) == "" {
 		return ingest.LoadedDocument{}, fmt.Errorf("no file data or text content provided")
+	}
+	// Base64 is ~4/3 the size of the decoded bytes - check before decoding
+	// so an oversized upload fails fast instead of after the allocation.
+	if approxDecoded := len(f.Base64Data) / 4 * 3; approxDecoded > maxUploadBytes {
+		return ingest.LoadedDocument{}, fmt.Errorf("file too large (~%d bytes, max %d)", approxDecoded, maxUploadBytes)
 	}
 	data, err := base64.StdEncoding.DecodeString(f.Base64Data)
 	if err != nil {

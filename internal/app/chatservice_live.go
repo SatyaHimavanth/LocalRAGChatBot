@@ -6,10 +6,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -246,6 +248,7 @@ func (s *ChatService) GetEventLogs(limit int) ([]store.EventLogEntry, error) {
 }
 
 func (s *ChatService) recordEvent(eventKey, title, detail, severity, scope string, collectionID, chatID, docID int64, batchID string) {
+	log.Printf("[event][%s][%s] %s: %s", severity, scope, title, detail)
 	if s.DB == nil {
 		return
 	}
@@ -597,6 +600,9 @@ func (s *ChatService) persistCancelledMessage(sessionID int64, parentMessageID i
 }
 
 func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, prompt string, parentMessageID int64, userMessageID int64) {
+	turnStart := time.Now()
+	log.Printf("[chat] session %d: turn started (msg %d, %d chars)", sessionID, userMessageID, len(prompt))
+
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancelMu.Lock()
 	s.cancelFuncs[sessionID] = cancel
@@ -621,6 +627,21 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 		s.cancelMu.Lock()
 		delete(s.cancelFuncs, sessionID)
 		s.cancelMu.Unlock()
+	}()
+	// Registered after the cleanup defer above, so it runs first (defers
+	// unwind LIFO): recovers the panic and marks doneEmitted before cleanup
+	// runs, so cleanup takes its normal "already handled" path instead of
+	// treating this as a cancellation.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[chat] PANIC recovered in session %d turn: %v\n%s", sessionID, r, debug.Stack())
+			if !doneEmitted {
+				s.emit("chat:token", map[string]any{"sessionId": sessionID, "token": "\n[Internal error - please try again]\n"})
+				s.emit("chat:done", meta.asMap(sessionID, int64(0)))
+				doneEmitted = true
+			}
+		}
+		log.Printf("[chat] session %d: turn finished in %s (doneEmitted=%v)", sessionID, time.Since(turnStart).Round(time.Millisecond), doneEmitted)
 	}()
 
 	s.emit("chat:thinking", map[string]any{"sessionId": sessionID})
@@ -661,6 +682,7 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 		WorkspaceMemory: memoryContext,
 	})
 	if planErr != nil {
+		log.Printf("[chat] session %d: planner error, falling back to direct: %v", sessionID, planErr)
 		plan = agent.Plan{UseDirect: true, Reason: "planner error: " + planErr.Error()}
 	}
 
@@ -693,8 +715,11 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 		if err == nil {
 			chunks, err = store.HybridSearch(s.DB, collectionID, query, queryEmb, plan.TopK)
 			if err != nil {
+				log.Printf("[chat] session %d: HybridSearch failed: %v", sessionID, err)
 				chunks = nil
 			}
+		} else {
+			log.Printf("[chat] session %d: query embedding failed: %v", sessionID, err)
 		}
 		evidence = buildEvidenceBundle(s.DB, collectionID, s.getCollectionName(collectionID), query, prompt, chunks, history)
 	}
@@ -746,6 +771,7 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 
 	chatCtx, err := s.Engine.ChatModel.NewContext(llama.WithContext(ctxSize))
 	if err != nil {
+		log.Printf("[chat] session %d: NewContext failed: %v", sessionID, err)
 		s.emit("chat:token", map[string]any{"sessionId": sessionID, "token": fmt.Sprintf("\n[Error: %v]\n", err)})
 		s.emit("chat:done", meta.asMap(sessionID, int64(0)))
 		doneEmitted = true
@@ -789,6 +815,8 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 							s.emit("chat:sources", map[string]any{"sessionId": sessionID, "msgId": msgID, "sources": sourceMap})
 						}
 						s.persistConversationMemory(sessionID, collectionID, userMessageID, msgID, prompt, fullResponse.String(), evidence, plan, history)
+					} else {
+						log.Printf("[chat] session %d: failed to persist assistant response (%d chars): %v", sessionID, fullResponse.Len(), err)
 					}
 				}
 				meta.Cancelled = false
@@ -800,6 +828,7 @@ func (s *ChatService) runConversationTurn(sessionID int64, collectionID int64, p
 			s.emit("chat:token", map[string]any{"sessionId": sessionID, "token": delta.Content})
 		case err := <-errs:
 			if err != nil {
+				log.Printf("[chat] session %d: ChatStream error: %v", sessionID, err)
 				s.emit("chat:token", map[string]any{"sessionId": sessionID, "token": fmt.Sprintf("\n[Error: %v]\n", err)})
 				s.emit("chat:done", meta.asMap(sessionID, int64(0)))
 				doneEmitted = true

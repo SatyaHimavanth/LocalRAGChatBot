@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"fmt"
+	"log"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
@@ -33,6 +35,27 @@ func Open(dbFileName string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Show SQLite source ID
+	var sourceID string
+	if err := db.QueryRow("SELECT sqlite_source_id()").Scan(&sourceID); err == nil {
+		log.Println("SQLite Source ID:", sourceID)
+	}
+
+	// Show registered modules
+	rows, err := db.Query("PRAGMA module_list")
+	if err == nil {
+		defer rows.Close()
+
+		log.Println("========== SQLite Modules ==========")
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err == nil {
+				log.Println(" ", name)
+			}
+		}
+	}
+
 	// Enable WAL mode explicitly
 	db.Exec("PRAGMA journal_mode=WAL")
 	db.Exec("PRAGMA busy_timeout=5000")
@@ -100,15 +123,43 @@ func initializeSchema(db *sql.DB) error {
 		"0007_event_log.sql",
 	}
 
+	var version string
+	if err := db.QueryRow("SELECT sqlite_version()").Scan(&version); err == nil {
+		log.Printf("SQLite Version: %s", version)
+	}
+
+	rows, err := db.Query("PRAGMA compile_options")
+	if err == nil {
+		defer rows.Close()
+
+		log.Println("SQLite Compile Options:")
+		for rows.Next() {
+			var opt string
+			rows.Scan(&opt)
+			log.Printf("  %s", opt)
+		}
+	}
+
+	log.Println("========== Database Schema Initialization ==========")
+
 	for _, f := range files {
+		log.Printf("[MIGRATION] Starting: %s", f)
+
 		sqlBytes, err := migrationsFS.ReadFile("migrations/" + f)
 		if err != nil {
-			return err
+			log.Printf("[MIGRATION] FAILED to read %s: %v", f, err)
+			return fmt.Errorf("failed to read migration %s: %w", f, err)
 		}
 
 		if _, err := db.Exec(string(sqlBytes)); err != nil {
-			return err
+			log.Printf("[MIGRATION] FAILED: %s", f)
+			log.Printf("[MIGRATION] ERROR: %v", err)
+			return fmt.Errorf("migration %s failed: %w", f, err)
 		}
+
+		log.Printf("[MIGRATION] SUCCESS: %s", f)
 	}
+
+	log.Println("========== Database Schema Initialization Complete ==========")
 	return nil
 }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { ReactNode, MouseEvent, CSSProperties } from "react";
 import { Message, ThemeVars, Theme, SourceRef } from "../types";
 import { I } from "./Icons";
-import { Markdown } from "./Markdown";
+import { Markdown, escapeHtml } from "./Markdown";
 import { Modal } from "./Modal";
 
 interface ChatPanelProps {
@@ -407,7 +407,8 @@ function insertSourceBadges(text: string, sources: SourceRef[]): string {
   return text.replace(/\[(\d+)\]/g, (_m, num) => {
     const refNum = parseInt(num);
     const src = sources.find((s) => s.refNumber === refNum);
-    return `<sup><span data-ref="${refNum}" style="cursor:pointer;color:rgba(99,102,241,0.9);font-weight:600;font-size:11px;background:rgba(99,102,241,0.12);padding:1px 5px;border-radius:3px;margin:0 1px;display:inline-block" title="${src ? `Source: ${src.filename}` : `Reference ${refNum}`}">[${refNum}]</span></sup>`;
+    const titleText = src ? `Source: ${src.filename}` : `Reference ${refNum}`;
+    return `<sup><span data-ref="${refNum}" style="cursor:pointer;color:rgba(99,102,241,0.9);font-weight:600;font-size:11px;background:rgba(99,102,241,0.12);padding:1px 5px;border-radius:3px;margin:0 1px;display:inline-block" title="${escapeHtml(titleText)}">[${refNum}]</span></sup>`;
   });
 }
 
