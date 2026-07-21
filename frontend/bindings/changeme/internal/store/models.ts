@@ -148,6 +148,23 @@ export interface IngestionLog {
     "createdAt": number;
 }
 
+export interface MCPConfiguration {
+    "enabled": boolean;
+    "servers": MCPServer[] | null;
+}
+
+export interface MCPServer {
+    "name": string;
+    "configJson": string;
+    "enabled": boolean;
+    "verified": boolean;
+    "toolCount": number;
+    "toolsJson": string;
+    "lastError": string;
+    "lastVerifiedAt": number;
+    "enabledTools": string[] | null;
+}
+
 export interface SourceChunkRef {
     "id": number;
     "messageId": number;

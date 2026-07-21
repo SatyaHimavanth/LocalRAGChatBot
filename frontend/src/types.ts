@@ -58,6 +58,28 @@ export interface ExtensionHook {
   updatedAt: number;
 }
 
+export interface MCPTool {
+  name: string;
+  description?: string;
+}
+
+export interface MCPServer {
+  name: string;
+  configJson: string;
+  enabled: boolean;
+  verified: boolean;
+  toolCount: number;
+  toolsJson: string;
+  lastError: string;
+  lastVerifiedAt: number;
+  enabledTools: string[];
+}
+
+export interface MCPConfiguration {
+  enabled: boolean;
+  servers: MCPServer[];
+}
+
 export interface EventLogEntry {
   id: number;
   eventKey: string;

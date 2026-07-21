@@ -120,6 +120,8 @@ func initializeSchema(db *sql.DB) error {
 		"0004_ingestion_queue.sql",
 		"0005_workspace_memory.sql",
 		"0007_event_log.sql",
+		"0008_mcp.sql",
+		"0009_mcp_tool_settings.sql",
 	}
 
 	var version string

@@ -12,5 +12,7 @@ export type {
     EventLogEntry,
     IngestionJob,
     IngestionLog,
+    MCPConfiguration,
+    MCPServer,
     SourceChunkRef
 } from "./models.js";

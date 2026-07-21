@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { ExtensionHook, ThemeVars } from "../types";
+import { ExtensionHook, MCPConfiguration, MCPServer, MCPTool, ThemeVars } from "../types";
 import { I } from "./Icons";
 
 interface ExtensionsPanelProps {
@@ -246,25 +246,157 @@ function statusFg(state: string) {
   return "rgba(148,163,184,0.95)";
 }
 
-// The previous registry was a set of placeholders. Keep this surface honest
-// until an extension can be installed and used locally end to end.
-export function ExtensionsPanel({ T }: { T: ThemeVars }) {
+interface MCPPanelProps {
+  T: ThemeVars;
+  configuration: MCPConfiguration;
+  loading: boolean;
+  onRefresh: () => Promise<void>;
+  onVerify: (configJSON: string) => Promise<MCPServer[]>;
+  onSave: (configJSON: string) => Promise<MCPServer[]>;
+  onSetEnabled: (enabled: boolean) => Promise<void>;
+  onSetServerEnabled: (name: string, enabled: boolean) => Promise<void>;
+  onSetToolEnabled: (serverName: string, toolName: string, enabled: boolean) => Promise<void>;
+}
+
+const exampleMCPConfig = `{
+  "mcpServers": {
+    "example": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/allowed-folder"]
+    }
+  }
+}`;
+
+function configToEditor(servers: MCPServer[]) {
+  const mcpServers: Record<string, unknown> = {};
+  for (const server of servers) {
+    try { mcpServers[server.name] = JSON.parse(server.configJson); } catch { /* Invalid saved entries are represented in their result card. */ }
+  }
+  return JSON.stringify({ mcpServers }, null, 2);
+}
+
+function parseTools(raw: string): MCPTool[] {
+  try { const tools = JSON.parse(raw); return Array.isArray(tools) ? tools : []; } catch { return []; }
+}
+
+// MCP is a real extension: users provide their own standard mcpServers JSON,
+// verify tool discovery, and selectively expose verified servers to the agent.
+export function ExtensionsPanel({ T, configuration, loading, onRefresh, onVerify, onSave, onSetEnabled, onSetServerEnabled, onSetToolEnabled }: MCPPanelProps) {
+  const [editor, setEditor] = useState(exampleMCPConfig);
+  const [results, setResults] = useState<MCPServer[]>([]);
+  const [hasUnsavedVerification, setHasUnsavedVerification] = useState(false);
+  const [working, setWorking] = useState<"verify" | "save" | "toggle" | "" >("");
+  const [notice, setNotice] = useState("");
+  const [expandedServers, setExpandedServers] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    if (configuration.servers.length > 0) setEditor(configToEditor(configuration.servers));
+  }, [configuration.servers]);
+
+  const runVerification = async () => {
+    setWorking("verify"); setNotice("");
+    try {
+      const verified = await onVerify(editor);
+      setResults(verified);
+      setHasUnsavedVerification(true);
+      const failed = verified.filter((server) => !server.verified).length;
+      setNotice(failed ? `${failed} server(s) could not be reached. Review the error below.` : `${verified.length} server(s) verified successfully.`);
+    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
+    finally { setWorking(""); }
+  };
+
+  const saveConfiguration = async () => {
+    setWorking("save"); setNotice("");
+    try {
+      const saved = await onSave(editor);
+      // The parent refreshes persisted tool selections during save. Clear the
+      // temporary verification result so these chips show the saved state.
+      setResults([]);
+      setHasUnsavedVerification(false);
+      const usable = saved.filter((server) => server.verified).length;
+      setNotice(`Saved ${saved.length} server(s). ${usable} verified server(s) can now be enabled.`);
+    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
+    finally { setWorking(""); }
+  };
+
+  const toggleMaster = async () => {
+    setWorking("toggle"); setNotice("");
+    try { await onSetEnabled(!configuration.enabled); } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); } finally { setWorking(""); }
+  };
+
+  const toggleServer = async (server: MCPServer) => {
+    setWorking("toggle"); setNotice("");
+    try { await onSetServerEnabled(server.name, !server.enabled); } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); } finally { setWorking(""); }
+  };
+
+  const toggleTool = async (server: MCPServer, tool: MCPTool) => {
+    setWorking("toggle"); setNotice("");
+    try {
+      await onSetToolEnabled(server.name, tool.name, !server.enabledTools.includes(tool.name));
+      setResults([]);
+    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
+    finally { setWorking(""); }
+  };
+
+  const displayedServers = results.length > 0 ? results : configuration.servers;
   return (
-    <div style={{ flex: 1, minWidth: 0, padding: 20, display: "flex", flexDirection: "column" }}>
-      <div>
-        <div style={{ fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
-          <I.Bolt /> Extensions
+    <div style={{ flex: 1, minWidth: 0, padding: 20, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}><I.Bolt /> MCP extensions</div>
+          <div style={{ fontSize: 12, color: T.text3, marginTop: 4 }}>Connect local or HTTP MCP servers using the standard <code>mcpServers</code> JSON format.</div>
         </div>
-        <div style={{ fontSize: 12, color: T.text3, marginTop: 4 }}>
-          Local integrations will be available here when they are ready to install and use.
-        </div>
+        <button onClick={toggleMaster} disabled={working !== ""} style={{ ...switchTrack(configuration.enabled), padding: 0, cursor: working ? "wait" : "pointer" }} title={configuration.enabled ? "Disable MCP extension" : "Enable MCP extension"}>
+          <span style={switchKnob(configuration.enabled)} />
+        </button>
       </div>
-      <div style={{ flex: 1, minHeight: 260, marginTop: 16, border: "1px solid " + T.border, borderRadius: 14, background: T.bg2, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 28 }}>
-        <div style={{ width: 48, height: 48, display: "grid", placeItems: "center", borderRadius: 14, color: "rgba(129,140,248,0.95)", background: "rgba(99,102,241,0.12)" }}><I.Bolt /></div>
-        <div style={{ marginTop: 16, fontSize: 16, fontWeight: 650 }}>Coming soon</div>
-        <p style={{ maxWidth: 440, margin: "8px 0 0", textAlign: "center", color: T.text3, fontSize: 13, lineHeight: 1.6 }}>
-          OCR, MCP, GraphRAG, and SQL tooling require dedicated local runtimes. They will be added only when they work end to end in the desktop app.
-        </p>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12, gap: 12, flexWrap: "wrap" }}>
+        <span style={chipStyle(configuration.enabled ? "rgba(34,197,94,0.14)" : "rgba(128,128,128,0.12)", configuration.enabled ? "rgba(34,197,94,0.95)" : T.text3, T.border)}>{configuration.enabled ? "MCP extension enabled" : "MCP extension disabled"}</span>
+        <button onClick={() => void onRefresh()} disabled={loading || working !== ""} style={actionBtn(T, false)}><I.Refresh /> Refresh</button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 1.15fr) minmax(260px, 0.85fr)", gap: 14, marginTop: 16, overflowY: "auto", paddingRight: 4 }}>
+        <section style={cardStyle(T)}>
+          <div style={{ fontSize: 14, fontWeight: 650 }}>Server configuration</div>
+          <p style={{ margin: "6px 0 10px", color: T.text3, fontSize: 12, lineHeight: 1.55 }}>Add more than one named server under <code>mcpServers</code>. Verification starts configured local commands or contacts the configured HTTP endpoint.</p>
+          <textarea value={editor} onChange={(event) => setEditor(event.target.value)} rows={18} spellCheck={false} style={{ ...inputStyle(T), minHeight: 300, resize: "vertical", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", lineHeight: 1.5 }} />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+            <button onClick={runVerification} disabled={working !== ""} style={actionBtn(T, false)}>{working === "verify" ? <I.Spinner /> : <I.Refresh />} Verify tools</button>
+            <button onClick={saveConfiguration} disabled={working !== ""} style={actionBtn(T, true)}>{working === "save" ? <I.Spinner /> : <I.Bolt />} Verify and save</button>
+          </div>
+          <div style={{ marginTop: 10, fontSize: 11, color: T.text3, lineHeight: 1.5 }}>Sensitive headers and environment values are kept in the local database. They are never written to app logs.</div>
+        </section>
+
+        <section style={{ ...cardStyle(T), display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 650 }}>Verified servers</div>
+          <div style={{ fontSize: 12, color: T.text3, marginTop: 5, lineHeight: 1.5 }}>Enable a verified server here, then turn on the master MCP extension to include its tools in the agent capability list.</div>
+          {notice && <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 8, background: notice.includes("could not") || notice.includes("invalid") ? "rgba(239,68,68,0.1)" : "rgba(99,102,241,0.1)", color: notice.includes("could not") || notice.includes("invalid") ? "rgba(220,38,38,0.95)" : T.text2, fontSize: 12, lineHeight: 1.45 }}>{notice}</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12, overflowY: "auto", paddingRight: 2 }}>
+            {displayedServers.length === 0 ? <div style={{ color: T.text3, fontSize: 12, padding: "18px 0" }}>No MCP servers have been saved yet.</div> : displayedServers.map((server) => {
+              const tools = parseTools(server.toolsJson);
+              return <div key={server.name} style={{ padding: 11, borderRadius: 10, border: "1px solid " + T.border, background: T.inputBg }}>
+                <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "start" }}>
+                  <div style={{ minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 650, overflow: "hidden", textOverflow: "ellipsis" }}>{server.name}</div><div style={{ marginTop: 3, fontSize: 11, color: server.verified ? "rgba(34,197,94,0.95)" : "rgba(220,38,38,0.95)" }}>{server.verified ? `${server.toolCount} tool${server.toolCount === 1 ? "" : "s"} found · ${server.enabledTools.length} enabled` : "Connection failed"}</div></div>
+                  <button onClick={() => toggleServer(server)} disabled={!server.verified || hasUnsavedVerification || working !== ""} style={{ ...switchTrack(server.enabled), padding: 0, cursor: !server.verified || hasUnsavedVerification || working ? "not-allowed" : "pointer", opacity: server.verified ? 1 : 0.5 }} title={hasUnsavedVerification ? "Save this verified configuration before enabling it" : server.enabled ? "Remove tools from agent" : "Add tools to agent"}><span style={switchKnob(server.enabled)} /></button>
+                </div>
+                {server.lastError && <div style={{ marginTop: 7, fontSize: 11, color: "rgba(220,38,38,0.95)", lineHeight: 1.45, wordBreak: "break-word" }}>{server.lastError}</div>}
+                {tools.length > 0 && (() => {
+                  const expanded = expandedServers.has(server.name);
+                  const visibleTools = expanded ? tools : tools.slice(0, 8);
+                  return <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {visibleTools.map((tool) => {
+                      const toolEnabled = server.enabledTools.includes(tool.name);
+                      const disabled = !server.verified || hasUnsavedVerification || working !== "";
+                      return <button key={tool.name} onClick={() => toggleTool(server, tool)} disabled={disabled} title={disabled ? hasUnsavedVerification ? "Save this verified configuration before selecting tools" : tool.description : `${toolEnabled ? "Disable" : "Enable"} ${tool.name}`} style={{ ...chipStyle(toolEnabled ? "rgba(34,197,94,0.14)" : "rgba(128,128,128,0.12)", toolEnabled ? "rgba(34,197,94,0.95)" : T.text3, T.border), cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.65 : 1 }}>{tool.name}</button>;
+                    })}
+                    {tools.length > 8 && <button onClick={() => setExpandedServers((current) => { const next = new Set(current); if (next.has(server.name)) next.delete(server.name); else next.add(server.name); return next; })} style={{ ...chipStyle("rgba(128,128,128,0.1)", T.text3, T.border), cursor: "pointer" }} title={expanded ? "Show fewer tools" : "Show all tools"}>{expanded ? "Show less" : `+${tools.length - 8}`}</button>}
+                  </div>;
+                })()}
+              </div>;
+            })}
+          </div>
+        </section>
       </div>
     </div>
   );

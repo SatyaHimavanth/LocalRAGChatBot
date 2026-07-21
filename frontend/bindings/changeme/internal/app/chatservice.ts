@@ -159,6 +159,14 @@ export function GetIngestionQueue(collectionID: number): $CancellablePromise<sto
 }
 
 /**
+ * GetMCPConfiguration returns the master MCP switch and saved server entries.
+ * Configuration is stored locally with the app database and is never logged.
+ */
+export function GetMCPConfiguration(): $CancellablePromise<store$0.MCPConfiguration> {
+    return $Call.ByID(251851794);
+}
+
+/**
  * GetMessageSources returns source chunks for a given message.
  */
 export function GetMessageSources(msgID: number): $CancellablePromise<store$0.SourceChunkRef[] | null> {
@@ -225,6 +233,15 @@ export function RetryFailedIngest(jobID: number): $CancellablePromise<void> {
     return $Call.ByID(3038328535, jobID);
 }
 
+/**
+ * SaveMCPConfiguration verifies and replaces the saved MCP server list. A
+ * server remains disabled after saving, even if it verified successfully; the
+ * user must explicitly enable it and the master MCP extension switch.
+ */
+export function SaveMCPConfiguration(configJSON: string): $CancellablePromise<store$0.MCPServer[] | null> {
+    return $Call.ByID(1662670643, configJSON);
+}
+
 export function Search(query: string, collectionID: number, topK: number): $CancellablePromise<$models.SearchResult[] | null> {
     return $Call.ByID(2413095468, query, collectionID, topK);
 }
@@ -254,6 +271,30 @@ export function SelectChatBranch(sessionID: number, messageID: number): $Cancell
 
 export function SendMessage(sessionID: number, collectionID: number, prompt: string): $CancellablePromise<void> {
     return $Call.ByID(279711485, sessionID, collectionID, prompt);
+}
+
+/**
+ * SetMCPEnabled controls the master extension toggle. It affects only agent
+ * capability exposure; server configurations remain saved and verified.
+ */
+export function SetMCPEnabled(enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2779648357, enabled);
+}
+
+/**
+ * SetMCPServerEnabled exposes one previously verified server to the agent.
+ */
+export function SetMCPServerEnabled(name: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(3585761244, name, enabled);
+}
+
+/**
+ * SetMCPToolEnabled selects whether one discovered MCP tool is exposed to the
+ * agent. This lets users keep a large server connected without overloading the
+ * local model's context window.
+ */
+export function SetMCPToolEnabled(serverName: string, toolName: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(3991477307, serverName, toolName, enabled);
 }
 
 /**
@@ -288,6 +329,14 @@ export function UpdateCollectionProfile(collectionID: number, embeddingModel: st
  */
 export function UploadFile(filename: string, base64Data: string, collectionID: number, replace: boolean): $CancellablePromise<$models.FileUploadResult | null> {
     return $Call.ByID(31057319, filename, base64Data, collectionID, replace);
+}
+
+/**
+ * VerifyMCPConfiguration validates standard mcpServers JSON and asks every
+ * configured server for tools/list. Verification does not alter saved state.
+ */
+export function VerifyMCPConfiguration(configJSON: string): $CancellablePromise<store$0.MCPServer[] | null> {
+    return $Call.ByID(1195166195, configJSON);
 }
 
 /**

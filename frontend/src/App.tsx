@@ -1,8 +1,8 @@
 ﻿import { useState, useEffect, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { Events } from "@wailsio/runtime";
-import { SendMessage, IngestFile, CreateCollection, UpdateCollectionProfile, GetCollections, CreateChat, GetChats, GetChatMessages, GetChatBranchOptions, SelectChatBranch, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, GetEventLogs, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, SearchMetadata, SearchWorkspace, GetDocumentContent, GetDocumentChunks, GetSessionSources, GetChunkContext, CancelGeneration, CancelIngest, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete } from "../bindings/changeme/internal/app/chatservice";
-import { Message, Chat, Collection, DocRecord, SearchResult, SearchScope, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob, IngestLogEntry, EventLogEntry, AgentPlan, AgentResult, ChunkRecord } from "./types";
+import { SendMessage, IngestFile, CreateCollection, UpdateCollectionProfile, GetCollections, CreateChat, GetChats, GetChatMessages, GetChatBranchOptions, SelectChatBranch, UpdateChatTitle, DeleteChat, DeleteCollection, DeleteDocument, GetDocumentsByCollection, GetEventLogs, ArchiveChat, UnarchiveChat, PinChat, UnpinChat, Search, SearchMetadata, SearchWorkspace, GetDocumentContent, GetDocumentChunks, GetSessionSources, GetChunkContext, CancelGeneration, CancelIngest, StartIngestBatch, GetIncompleteJobs, ResumeIngest, DiscardAllIncomplete, GetMCPConfiguration, VerifyMCPConfiguration, SaveMCPConfiguration, SetMCPEnabled, SetMCPServerEnabled, SetMCPToolEnabled } from "../bindings/changeme/internal/app/chatservice";
+import { Message, Chat, Collection, DocRecord, SearchResult, SearchScope, ToastMsg, Theme, themeVars, getErrMsg, IncompleteJob, IngestLogEntry, EventLogEntry, AgentPlan, AgentResult, ChunkRecord, MCPConfiguration, MCPServer } from "./types";
 import { I } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
@@ -78,6 +78,23 @@ const initialTheme = (): Theme =>
     ? "dark"
     : "light";
 
+const mapMCPServer = (server: any): MCPServer => ({
+  name: String(server?.name ?? server?.Name ?? ""),
+  configJson: String(server?.configJson ?? server?.ConfigJSON ?? "{}"),
+  enabled: server?.enabled === true || server?.Enabled === true,
+  verified: server?.verified === true || server?.Verified === true,
+  toolCount: Number(server?.toolCount ?? server?.ToolCount ?? 0),
+  toolsJson: String(server?.toolsJson ?? server?.ToolsJSON ?? "[]"),
+  lastError: String(server?.lastError ?? server?.LastError ?? ""),
+  lastVerifiedAt: Number(server?.lastVerifiedAt ?? server?.LastVerifiedAt ?? 0),
+  enabledTools: Array.isArray(server?.enabledTools ?? server?.EnabledTools) ? (server.enabledTools ?? server.EnabledTools).map(String) : [],
+});
+
+const mapMCPConfiguration = (value: any): MCPConfiguration => ({
+  enabled: value?.enabled === true || value?.Enabled === true,
+  servers: Array.isArray(value?.servers ?? value?.Servers) ? (value.servers ?? value.Servers).map(mapMCPServer) : [],
+});
+
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
@@ -93,6 +110,8 @@ export default function App() {
   const isArchived=activeChat?.archived===true;
   const createdInitialChat = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mcpConfiguration, setMcpConfiguration] = useState<MCPConfiguration>({ enabled: false, servers: [] });
+  const [mcpLoading, setMcpLoading] = useState(false);
 
   const [sq, setSq]=useState(""); const [sResults,setSResults]=useState<SearchResult[]>([]);
   const [sBusy,setSBusy]=useState(false); const [sDone,setSDone]=useState(false);
@@ -162,6 +181,13 @@ export default function App() {
     }
   }, []);
 
+  const loadMCPConfiguration = useCallback(async () => {
+    setMcpLoading(true);
+    try { setMcpConfiguration(mapMCPConfiguration(await GetMCPConfiguration())); }
+    catch (error) { console.error("Failed to load MCP configuration:", error); }
+    finally { setMcpLoading(false); }
+  }, []);
+
   const loadIncompleteJobs = useCallback(async () => {
     try {
       const jobs: any = await GetIncompleteJobs();
@@ -199,6 +225,7 @@ export default function App() {
   useEffect(()=>{const h=(e:MouseEvent)=>{if(ctxRef.current&&!ctxRef.current.contains(e.target as Node))setCtxMenuChatId(null)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
   useEffect(()=>{const h=(e:MouseEvent)=>{if(colDropdownRef.current&&!colDropdownRef.current.contains(e.target as Node))setColDropdownOpen(false)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
   useEffect(()=>{(async ()=>{ await loadCols(); await loadChats(); await loadEventLogs(); const list = await loadIncompleteJobs(); if (list && list.length > 0) setShowResumeModal(true); })();},[]);
+  useEffect(() => { if (tab === "ext") void loadMCPConfiguration(); }, [tab, loadMCPConfiguration]);
 
 
 useEffect(()=>{
@@ -854,7 +881,13 @@ useEffect(()=>{
         onDiscardQueue={handleDiscardAllJobs}
       />}
 
-      {tab === "ext" && <ExtensionsPanel T={T} />}
+      {tab === "ext" && <ExtensionsPanel T={T} configuration={mcpConfiguration} loading={mcpLoading}
+        onRefresh={loadMCPConfiguration}
+        onVerify={async (configJSON) => ((await VerifyMCPConfiguration(configJSON)) || []).map(mapMCPServer)}
+        onSave={async (configJSON) => { const servers = ((await SaveMCPConfiguration(configJSON)) || []).map(mapMCPServer); await loadMCPConfiguration(); return servers; }}
+        onSetEnabled={async (enabled) => { await SetMCPEnabled(enabled); await loadMCPConfiguration(); }}
+        onSetServerEnabled={async (name, enabled) => { await SetMCPServerEnabled(name, enabled); await loadMCPConfiguration(); }}
+        onSetToolEnabled={async (serverName, toolName, enabled) => { await SetMCPToolEnabled(serverName, toolName, enabled); await loadMCPConfiguration(); }} />}
 
       {/* Context Menu */}
       {ctxMenuChatId !== null && (() => { const chat = chats.find(c => c.id === ctxMenuChatId); if (!chat) return null; const a = chat.archived; return (

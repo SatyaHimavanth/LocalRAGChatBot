@@ -20,6 +20,7 @@ import (
 
 	"changeme/internal/agent"
 	"changeme/internal/engine"
+	"changeme/internal/mcp"
 	"changeme/internal/store"
 
 	llama "github.com/tcpipuk/llama-go"
@@ -126,7 +127,8 @@ type ChatService struct {
 	EmbedModelPath string
 
 	// agent drives persona, memory, and retrieval decisions.
-	agent *agent.Agent
+	agent   *agent.Agent
+	agentMu sync.Mutex
 
 	// cancelFuncs tracks active streaming sessions for cancellation
 	cancelFuncs map[int64]context.CancelFunc
@@ -140,11 +142,7 @@ type ChatService struct {
 func (s *ChatService) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	s.app = application.Get()
 	s.cancelFuncs = make(map[int64]context.CancelFunc)
-	s.agent = agent.New(
-		agent.WithPersona(agent.DefaultPersona()),
-		agent.WithTools(agent.DefaultTools()),
-		agent.WithPlanner(agent.NewHeuristicPlanner()),
-	)
+	s.rebuildAgent()
 	s.CleanupIncompleteOnStartup()
 	return nil
 }
@@ -210,6 +208,180 @@ func (s *ChatService) GetEventLogs(limit int) ([]store.EventLogEntry, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 	return store.GetEventLogs(s.DB, limit)
+}
+
+// GetMCPConfiguration returns the master MCP switch and saved server entries.
+// Configuration is stored locally with the app database and is never logged.
+func (s *ChatService) GetMCPConfiguration() (store.MCPConfiguration, error) {
+	return store.GetMCPConfiguration(s.DB)
+}
+
+// VerifyMCPConfiguration validates standard mcpServers JSON and asks every
+// configured server for tools/list. Verification does not alter saved state.
+func (s *ChatService) VerifyMCPConfiguration(configJSON string) ([]store.MCPServer, error) {
+	config, err := mcp.ParseConfiguration(configJSON)
+	if err != nil {
+		return nil, err
+	}
+	return s.verifyMCPServers(config)
+}
+
+// SaveMCPConfiguration verifies and replaces the saved MCP server list. A
+// server remains disabled after saving, even if it verified successfully; the
+// user must explicitly enable it and the master MCP extension switch.
+func (s *ChatService) SaveMCPConfiguration(configJSON string) ([]store.MCPServer, error) {
+	config, err := mcp.ParseConfiguration(configJSON)
+	if err != nil {
+		return nil, err
+	}
+	servers, err := s.verifyMCPServers(config)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.ReplaceMCPServers(s.DB, servers); err != nil {
+		return nil, err
+	}
+	s.rebuildAgent()
+	s.recordEvent("mcp:save", "MCP configuration saved", fmt.Sprintf("%d server configuration(s)", len(servers)), "info", "extensions", 0, 0, 0, "")
+	return servers, nil
+}
+
+func (s *ChatService) verifyMCPServers(config mcp.Configuration) ([]store.MCPServer, error) {
+	previous, err := store.GetMCPConfiguration(s.DB)
+	if err != nil {
+		return nil, err
+	}
+	previousByName := make(map[string]store.MCPServer, len(previous.Servers))
+	for _, server := range previous.Servers {
+		previousByName[server.Name] = server
+	}
+	names := make([]string, 0, len(config.MCPServers))
+	for name := range config.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	servers := make([]store.MCPServer, 0, len(names))
+	for _, name := range names {
+		serverConfig := config.MCPServers[name]
+		configBytes := config.RawServers[name]
+		if len(configBytes) == 0 {
+			configBytes, _ = json.Marshal(serverConfig)
+		}
+		entry := store.MCPServer{Name: name, ConfigJSON: string(configBytes), LastVerifiedAt: time.Now().Unix()}
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		tools, verifyErr := mcp.ListTools(ctx, serverConfig)
+		cancel()
+		if verifyErr != nil {
+			entry.LastError = verifyErr.Error()
+			log.Printf("[mcp] server %q verification failed: %v", name, verifyErr)
+		} else {
+			toolBytes, _ := json.Marshal(tools)
+			entry.Verified, entry.ToolCount, entry.ToolsJSON = true, len(tools), string(toolBytes)
+			// Preserve an existing per-server choice only when the replacement
+			// configuration is also verified.
+			entry.Enabled = previousByName[name].Enabled
+			log.Printf("[mcp] server %q verified with %d tool(s)", name, entry.ToolCount)
+		}
+		servers = append(servers, entry)
+	}
+	return servers, nil
+}
+
+// SetMCPEnabled controls the master extension toggle. It affects only agent
+// capability exposure; server configurations remain saved and verified.
+func (s *ChatService) SetMCPEnabled(enabled bool) error {
+	if err := store.SetMCPEnabled(s.DB, enabled); err != nil {
+		return err
+	}
+	s.rebuildAgent()
+	s.recordEvent("mcp:toggle", "MCP extension updated", map[bool]string{true: "enabled", false: "disabled"}[enabled], "info", "extensions", 0, 0, 0, "")
+	return nil
+}
+
+// SetMCPServerEnabled exposes one previously verified server to the agent.
+func (s *ChatService) SetMCPServerEnabled(name string, enabled bool) error {
+	config, err := store.GetMCPConfiguration(s.DB)
+	if err != nil {
+		return err
+	}
+	var server *store.MCPServer
+	for i := range config.Servers {
+		if config.Servers[i].Name == name {
+			server = &config.Servers[i]
+			break
+		}
+	}
+	if server == nil {
+		return fmt.Errorf("MCP server %q was not found", name)
+	}
+	if enabled && !server.Verified {
+		return fmt.Errorf("verify MCP server %q successfully before enabling it", name)
+	}
+	if err := store.SetMCPServerEnabled(s.DB, name, enabled); err != nil {
+		return err
+	}
+	s.rebuildAgent()
+	s.recordEvent("mcp:server_toggle", "MCP server updated", fmt.Sprintf("%s: %s", name, map[bool]string{true: "enabled", false: "disabled"}[enabled]), "info", "extensions", 0, 0, 0, "")
+	return nil
+}
+
+// SetMCPToolEnabled selects whether one discovered MCP tool is exposed to the
+// agent. This lets users keep a large server connected without overloading the
+// local model's context window.
+func (s *ChatService) SetMCPToolEnabled(serverName, toolName string, enabled bool) error {
+	config, err := store.GetMCPConfiguration(s.DB)
+	if err != nil {
+		return err
+	}
+	var server *store.MCPServer
+	for i := range config.Servers {
+		if config.Servers[i].Name == serverName {
+			server = &config.Servers[i]
+			break
+		}
+	}
+	if server == nil {
+		return fmt.Errorf("MCP server %q was not found", serverName)
+	}
+	if !server.Verified {
+		return fmt.Errorf("verify MCP server %q successfully before selecting tools", serverName)
+	}
+	var tools []mcp.Tool
+	if err := json.Unmarshal([]byte(server.ToolsJSON), &tools); err != nil {
+		return fmt.Errorf("read MCP tools for %q: %w", serverName, err)
+	}
+	found := false
+	for _, tool := range tools {
+		if tool.Name == toolName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("MCP tool %q was not found on server %q", toolName, serverName)
+	}
+	// Configurations saved before per-tool settings existed have no rows. Seed
+	// them once only, otherwise each later click would re-enable prior choices.
+	hasSettings, err := store.HasMCPToolSettings(s.DB, serverName)
+	if err != nil {
+		return err
+	}
+	if !hasSettings {
+		for _, tool := range tools {
+			if tool.Name == "" {
+				continue
+			}
+			if err := store.SetMCPToolEnabled(s.DB, serverName, tool.Name, true); err != nil {
+				return err
+			}
+		}
+	}
+	if err := store.SetMCPToolEnabled(s.DB, serverName, toolName, enabled); err != nil {
+		return err
+	}
+	s.rebuildAgent()
+	s.recordEvent("mcp:tool_toggle", "MCP tool updated", fmt.Sprintf("%s.%s: %s", serverName, toolName, map[bool]string{true: "enabled", false: "disabled"}[enabled]), "info", "extensions", 0, 0, 0, "")
+	return nil
 }
 
 func (s *ChatService) recordEvent(eventKey, title, detail, severity, scope string, collectionID, chatID, docID int64, batchID string) {
@@ -1380,14 +1552,53 @@ func workspaceSourceScore(query string, terms []string, filename, collectionName
 }
 
 func (s *ChatService) ensureAgent() *agent.Agent {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
 	if s.agent == nil {
-		s.agent = agent.New(
-			agent.WithPersona(agent.DefaultPersona()),
-			agent.WithTools(agent.DefaultTools()),
-			agent.WithPlanner(agent.NewHeuristicPlanner()),
-		)
+		s.agent = s.newAgent()
 	}
 	return s.agent
+}
+
+func (s *ChatService) rebuildAgent() {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	s.agent = s.newAgent()
+}
+
+func (s *ChatService) newAgent() *agent.Agent {
+	tools := agent.DefaultTools()
+	if config, err := store.GetMCPConfiguration(s.DB); err == nil && config.Enabled {
+		for _, server := range config.Servers {
+			if !server.Enabled || !server.Verified {
+				continue
+			}
+			var mcpTools []mcp.Tool
+			if err := json.Unmarshal([]byte(server.ToolsJSON), &mcpTools); err != nil {
+				continue
+			}
+			enabledTools := make(map[string]struct{}, len(server.EnabledTools))
+			for _, name := range server.EnabledTools {
+				enabledTools[name] = struct{}{}
+			}
+			for _, tool := range mcpTools {
+				name := strings.TrimSpace(tool.Name)
+				if name == "" {
+					continue
+				}
+				if _, enabled := enabledTools[name]; !enabled {
+					continue
+				}
+				description := strings.TrimSpace(tool.Description)
+				if description == "" {
+					description = "Tool exposed by MCP server " + server.Name + "."
+				}
+				description = trimSummaryText(description, 180)
+				tools = append(tools, agent.ToolSpec{Name: "mcp." + server.Name + "." + name, Description: description})
+			}
+		}
+	}
+	return agent.New(agent.WithPersona(agent.DefaultPersona()), agent.WithTools(tools), agent.WithPlanner(agent.NewHeuristicPlanner()))
 }
 
 func normalizeDistanceScore(score float64) float64 {
