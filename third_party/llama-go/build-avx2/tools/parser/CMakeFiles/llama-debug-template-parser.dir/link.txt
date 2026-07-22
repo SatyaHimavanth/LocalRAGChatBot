@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\llama-debug-template-parser.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\llama-debug-template-parser.dir/objects.a @CMakeFiles\llama-debug-template-parser.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\llama-debug-template-parser.dir/objects.a -Wl,--no-whole-archive -o ..\..\bin\llama-debug-template-parser.exe -Wl,--out-implib,libllama-debug-template-parser.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\llama-debug-template-parser.dir\linkLibs.rsp

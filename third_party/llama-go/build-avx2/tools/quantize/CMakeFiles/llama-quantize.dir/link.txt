@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\llama-quantize.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\llama-quantize.dir/objects.a @CMakeFiles\llama-quantize.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\llama-quantize.dir/objects.a -Wl,--no-whole-archive -o ..\..\bin\llama-quantize.exe -Wl,--out-implib,libllama-quantize.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\llama-quantize.dir\linkLibs.rsp

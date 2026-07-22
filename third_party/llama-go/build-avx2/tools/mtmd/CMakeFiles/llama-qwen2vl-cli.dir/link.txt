@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\llama-qwen2vl-cli.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\llama-qwen2vl-cli.dir/objects.a @CMakeFiles\llama-qwen2vl-cli.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\llama-qwen2vl-cli.dir/objects.a -Wl,--no-whole-archive -o ..\..\bin\llama-qwen2vl-cli.exe -Wl,--out-implib,libllama-qwen2vl-cli.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\llama-qwen2vl-cli.dir\linkLibs.rsp

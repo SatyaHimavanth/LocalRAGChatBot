@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\llama-template-analysis.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\llama-template-analysis.dir/objects.a @CMakeFiles\llama-template-analysis.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\llama-template-analysis.dir/objects.a -Wl,--no-whole-archive -o ..\..\bin\llama-template-analysis.exe -Wl,--out-implib,libllama-template-analysis.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\llama-template-analysis.dir\linkLibs.rsp

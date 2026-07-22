@@ -17,7 +17,21 @@ CFLAGS   += -Wall -Wextra -Wpedantic -Wcast-qual -Wdouble-promotion -Wshadow -Ws
 CXXFLAGS += -Wall -Wextra -Wpedantic -Wcast-qual -Wno-unused-function
 
 # Static linkage configurations
-CMAKE_ARGS+=-DBUILD_SHARED_LIBS=OFF
+CMAKE_ARGS += -DBUILD_SHARED_LIBS=OFF
+CMAKE_ARGS += -DGGML_NATIVE=OFF
+CMAKE_ARGS += -DGGML_CPU_ALL_VARIANTS=OFF
+CMAKE_ARGS += -DGGML_AVX=ON
+CMAKE_ARGS += -DGGML_AVX2=ON
+CMAKE_ARGS += -DGGML_FMA=ON
+CMAKE_ARGS += -DGGML_F16C=ON
+CMAKE_ARGS += -DGGML_BMI2=ON
+CMAKE_ARGS += -DGGML_AVX512=OFF
+
+CMAKE_ARGS += -DLLAMA_BUILD_SERVER=OFF
+CMAKE_ARGS += -DLLAMA_BUILD_TOOLS=OFF
+CMAKE_ARGS += -DLLAMA_BUILD_TESTS=OFF
+CMAKE_ARGS += -DLLAMA_BUILD_EXAMPLES=OFF
+CMAKE_ARGS += -DLLAMA_BUILD_COMMON=ON
 
 COMMON_STATIC_LIBS = build/common/libllama-common.a build/common/libllama-common-base.a build/src/libllama.a build/ggml/src/ggml.a build/ggml/src/ggml-base.a build/ggml/src/ggml-cpu.a
 
@@ -31,7 +45,8 @@ llama.cpp/ggml-alloc.o: llama.cpp/ggml.o
 
 llama.cpp/ggml.o:
 	@mkdir -p build
-	@cd build && cmake ../llama.cpp $(CMAKE_ARGS) -DLLAMA_CURL=OFF && cmake --build . --config Release --target ggml llama
+	@cd build && cmake ../llama.cpp $(CMAKE_ARGS) -DLLAMA_CURL=OFF
+	@cd build && cmake --build . --config Release --target ggml llama llama-common
 	@mkdir -p llama.cpp
 	@if [ -f build/ggml/src/CMakeFiles/ggml-base.dir/ggml.c.obj ]; then \
 		cp -rf build/ggml/src/CMakeFiles/ggml-base.dir/ggml.c.obj llama.cpp/ggml.o; \
@@ -73,7 +88,7 @@ vendor-headers cgo_headers/.vendored:
 	@touch cgo_headers/.vendored
 
 libbinding.a: cgo_headers/.vendored wrapper.o llama.cpp/ggml.o llama.cpp/ggml-alloc.o llama.cpp/k_quants.o llama.cpp/llama.o
-	cd build && cmake --build . --target llama-common
+	@cd build && cmake --build . --config Release --target llama-common
 	ar crs libbinding.a wrapper.o
 	@echo "Copying static libraries..."
 	cp $(COMMON_STATIC_LIBS) .

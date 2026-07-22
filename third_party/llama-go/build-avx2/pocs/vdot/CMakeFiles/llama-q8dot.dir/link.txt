@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\llama-q8dot.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\llama-q8dot.dir/objects.a @CMakeFiles\llama-q8dot.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\llama-q8dot.dir/objects.a -Wl,--no-whole-archive -o ..\..\bin\llama-q8dot.exe -Wl,--out-implib,libllama-q8dot.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\llama-q8dot.dir\linkLibs.rsp

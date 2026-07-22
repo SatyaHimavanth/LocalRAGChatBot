@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\test-quant-type-selection.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\test-quant-type-selection.dir/objects.a @CMakeFiles\test-quant-type-selection.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test-quant-type-selection.dir/objects.a -Wl,--no-whole-archive -o ..\bin\test-quant-type-selection.exe -Wl,--out-implib,libtest-quant-type-selection.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test-quant-type-selection.dir\linkLibs.rsp

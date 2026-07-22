@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\test-state-restore-fragmented.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\test-state-restore-fragmented.dir/objects.a @CMakeFiles\test-state-restore-fragmented.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test-state-restore-fragmented.dir/objects.a -Wl,--no-whole-archive -o ..\bin\test-state-restore-fragmented.exe -Wl,--out-implib,libtest-state-restore-fragmented.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test-state-restore-fragmented.dir\linkLibs.rsp

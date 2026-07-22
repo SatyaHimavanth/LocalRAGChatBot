@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\llama-gen-docs.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\llama-gen-docs.dir/objects.a @CMakeFiles\llama-gen-docs.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\llama-gen-docs.dir/objects.a -Wl,--no-whole-archive -o ..\..\bin\llama-gen-docs.exe -Wl,--out-implib,libllama-gen-docs.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\llama-gen-docs.dir\linkLibs.rsp

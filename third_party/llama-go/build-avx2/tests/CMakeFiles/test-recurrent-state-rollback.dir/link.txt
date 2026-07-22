@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\test-recurrent-state-rollback.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\test-recurrent-state-rollback.dir/objects.a @CMakeFiles\test-recurrent-state-rollback.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test-recurrent-state-rollback.dir/objects.a -Wl,--no-whole-archive -o ..\bin\test-recurrent-state-rollback.exe -Wl,--out-implib,libtest-recurrent-state-rollback.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test-recurrent-state-rollback.dir\linkLibs.rsp

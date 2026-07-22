@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\test-chat-template.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\test-chat-template.dir/objects.a @CMakeFiles\test-chat-template.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test-chat-template.dir/objects.a -Wl,--no-whole-archive -o ..\bin\test-chat-template.exe -Wl,--out-implib,libtest-chat-template.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test-chat-template.dir\linkLibs.rsp

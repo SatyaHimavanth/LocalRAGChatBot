@@ -1,0 +1,2 @@
+C:\msys64\ucrt64\bin\ar.exe qc libserver-context.a "CMakeFiles/server-context.dir/server-chat.cpp.obj" "CMakeFiles/server-context.dir/server-task.cpp.obj" "CMakeFiles/server-context.dir/server-queue.cpp.obj" "CMakeFiles/server-context.dir/server-common.cpp.obj" "CMakeFiles/server-context.dir/server-context.cpp.obj" "CMakeFiles/server-context.dir/server-stream.cpp.obj" "CMakeFiles/server-context.dir/server-tools.cpp.obj" "CMakeFiles/server-context.dir/server-schema.cpp.obj"
+C:\msys64\ucrt64\bin\ranlib.exe libserver-context.a

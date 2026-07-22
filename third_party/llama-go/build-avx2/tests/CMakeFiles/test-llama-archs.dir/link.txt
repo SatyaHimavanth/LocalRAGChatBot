@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\test-llama-archs.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\test-llama-archs.dir/objects.a @CMakeFiles\test-llama-archs.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test-llama-archs.dir/objects.a -Wl,--no-whole-archive -o ..\bin\test-llama-archs.exe -Wl,--out-implib,libtest-llama-archs.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test-llama-archs.dir\linkLibs.rsp

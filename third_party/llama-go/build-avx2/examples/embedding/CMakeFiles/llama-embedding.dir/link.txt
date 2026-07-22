@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\llama-embedding.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\llama-embedding.dir/objects.a @CMakeFiles\llama-embedding.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\llama-embedding.dir/objects.a -Wl,--no-whole-archive -o ..\..\bin\llama-embedding.exe -Wl,--out-implib,libllama-embedding.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\llama-embedding.dir\linkLibs.rsp

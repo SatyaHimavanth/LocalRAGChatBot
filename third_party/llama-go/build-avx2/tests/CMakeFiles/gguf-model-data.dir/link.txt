@@ -1,0 +1,2 @@
+C:\msys64\ucrt64\bin\ar.exe qc libgguf-model-data.a "CMakeFiles/gguf-model-data.dir/gguf-model-data.cpp.obj"
+C:\msys64\ucrt64\bin\ranlib.exe libgguf-model-data.a

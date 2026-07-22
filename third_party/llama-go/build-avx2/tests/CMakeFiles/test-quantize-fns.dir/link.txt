@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\test-quantize-fns.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\test-quantize-fns.dir/objects.a @CMakeFiles\test-quantize-fns.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test-quantize-fns.dir/objects.a -Wl,--no-whole-archive -o ..\bin\test-quantize-fns.exe -Wl,--out-implib,libtest-quantize-fns.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test-quantize-fns.dir\linkLibs.rsp

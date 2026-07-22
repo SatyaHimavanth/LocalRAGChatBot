@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\llama-llava-cli.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\llama-llava-cli.dir/objects.a @CMakeFiles\llama-llava-cli.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\llama-llava-cli.dir/objects.a -Wl,--no-whole-archive -o ..\..\bin\llama-llava-cli.exe -Wl,--out-implib,libllama-llava-cli.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\llama-llava-cli.dir\linkLibs.rsp

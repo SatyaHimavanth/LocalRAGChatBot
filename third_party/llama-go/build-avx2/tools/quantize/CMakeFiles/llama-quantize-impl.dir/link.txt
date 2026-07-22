@@ -1,0 +1,2 @@
+C:\msys64\ucrt64\bin\ar.exe qc libllama-quantize-impl.a "CMakeFiles/llama-quantize-impl.dir/quantize.cpp.obj"
+C:\msys64\ucrt64\bin\ranlib.exe libllama-quantize-impl.a

@@ -1,0 +1,2 @@
+C:\msys64\ucrt64\bin\ar.exe qc libllama-batched-bench-impl.a "CMakeFiles/llama-batched-bench-impl.dir/batched-bench.cpp.obj"
+C:\msys64\ucrt64\bin\ranlib.exe libllama-batched-bench-impl.a

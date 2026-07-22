@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\llama-convert-llama2c-to-ggml.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\llama-convert-llama2c-to-ggml.dir/objects.a @CMakeFiles\llama-convert-llama2c-to-ggml.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\llama-convert-llama2c-to-ggml.dir/objects.a -Wl,--no-whole-archive -o ..\..\bin\llama-convert-llama2c-to-ggml.exe -Wl,--out-implib,libllama-convert-llama2c-to-ggml.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\llama-convert-llama2c-to-ggml.dir\linkLibs.rsp

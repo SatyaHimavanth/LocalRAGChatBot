@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\test-mtmd-c-api.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\test-mtmd-c-api.dir/objects.a @CMakeFiles\test-mtmd-c-api.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test-mtmd-c-api.dir/objects.a -Wl,--no-whole-archive -o ..\bin\test-mtmd-c-api.exe -Wl,--out-implib,libtest-mtmd-c-api.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test-mtmd-c-api.dir\linkLibs.rsp

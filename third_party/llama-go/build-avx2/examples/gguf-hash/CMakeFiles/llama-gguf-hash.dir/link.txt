@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\llama-gguf-hash.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\llama-gguf-hash.dir/objects.a @CMakeFiles\llama-gguf-hash.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\llama-gguf-hash.dir/objects.a -Wl,--no-whole-archive -o ..\..\bin\llama-gguf-hash.exe -Wl,--out-implib,libllama-gguf-hash.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\llama-gguf-hash.dir\linkLibs.rsp

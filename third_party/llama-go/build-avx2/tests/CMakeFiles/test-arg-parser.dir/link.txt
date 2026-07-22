@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\test-arg-parser.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\test-arg-parser.dir/objects.a @CMakeFiles\test-arg-parser.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test-arg-parser.dir/objects.a -Wl,--no-whole-archive -o ..\bin\test-arg-parser.exe -Wl,--out-implib,libtest-arg-parser.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test-arg-parser.dir\linkLibs.rsp

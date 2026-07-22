@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\test-quantize-perf.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\test-quantize-perf.dir/objects.a @CMakeFiles\test-quantize-perf.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test-quantize-perf.dir/objects.a -Wl,--no-whole-archive -o ..\bin\test-quantize-perf.exe -Wl,--out-implib,libtest-quantize-perf.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test-quantize-perf.dir\linkLibs.rsp

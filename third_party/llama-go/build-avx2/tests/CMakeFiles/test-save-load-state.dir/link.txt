@@ -1,0 +1,3 @@
+C:\msys64\ucrt64\bin\cmake.exe -E rm -f CMakeFiles\test-save-load-state.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\test-save-load-state.dir/objects.a @CMakeFiles\test-save-load-state.dir\objects1.rsp
+C:\msys64\ucrt64\bin\g++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test-save-load-state.dir/objects.a -Wl,--no-whole-archive -o ..\bin\test-save-load-state.exe -Wl,--out-implib,libtest-save-load-state.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test-save-load-state.dir\linkLibs.rsp

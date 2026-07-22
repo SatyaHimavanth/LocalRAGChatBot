@@ -1,0 +1,2 @@
+C:\msys64\ucrt64\bin\ar.exe qc libllama-completion-impl.a "CMakeFiles/llama-completion-impl.dir/completion.cpp.obj"
+C:\msys64\ucrt64\bin\ranlib.exe libllama-completion-impl.a

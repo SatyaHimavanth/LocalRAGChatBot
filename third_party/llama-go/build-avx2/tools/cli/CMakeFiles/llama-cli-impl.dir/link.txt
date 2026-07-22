@@ -1,0 +1,2 @@
+C:\msys64\ucrt64\bin\ar.exe qc libllama-cli-impl.a "CMakeFiles/llama-cli-impl.dir/cli.cpp.obj"
+C:\msys64\ucrt64\bin\ranlib.exe libllama-cli-impl.a

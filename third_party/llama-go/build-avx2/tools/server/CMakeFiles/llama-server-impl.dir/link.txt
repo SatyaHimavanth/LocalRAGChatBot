@@ -1,0 +1,2 @@
+C:\msys64\ucrt64\bin\ar.exe qc libllama-server-impl.a "CMakeFiles/llama-server-impl.dir/server.cpp.obj" "CMakeFiles/llama-server-impl.dir/server-http.cpp.obj" "CMakeFiles/llama-server-impl.dir/server-models.cpp.obj"
+C:\msys64\ucrt64\bin\ranlib.exe libllama-server-impl.a
